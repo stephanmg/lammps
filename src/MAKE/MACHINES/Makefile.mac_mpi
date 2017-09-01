@@ -6,6 +6,7 @@ SHELL = /bin/sh
 # compiler/linker settings
 # generally no need to edit this section
 # unless additional compiler/linker flags or libraries needed for your machine
+# Warning on some OSX (10.10.5) it might occur that mpicxx-openmpi-mp is clang
 
 CC =	 	/opt/local/bin/mpicxx-openmpi-mp
 CCFLAGS =	-O3 
