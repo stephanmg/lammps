@@ -43,13 +43,13 @@ class Force : protected Pointers {
   double femtosecond;                // 1 femtosecond in native units
   double qelectron;                  // 1 electron charge abs() in native units
 
+  double qqr2e_lammps_real;          // different versions of this constant
+  double qqr2e_charmm_real;          // used by new CHARMM pair styles
+
   int newton,newton_pair,newton_bond;   // Newton's 3rd law settings
 
   class Pair *pair;
   char *pair_style;
-
-  typedef Pair *(*PairCreator)(LAMMPS *);
-  std::map<std::string,PairCreator> *pair_map;
 
   class Bond *bond;
   char *bond_style;
@@ -65,6 +65,28 @@ class Force : protected Pointers {
 
   class KSpace *kspace;
   char *kspace_style;
+
+  typedef Pair *(*PairCreator)(LAMMPS *);
+  typedef Bond *(*BondCreator)(LAMMPS *);
+  typedef Angle *(*AngleCreator)(LAMMPS *);
+  typedef Dihedral *(*DihedralCreator)(LAMMPS *);
+  typedef Improper *(*ImproperCreator)(LAMMPS *);
+  typedef KSpace *(*KSpaceCreator)(LAMMPS *,int,char**);
+
+  typedef std::map<std::string,PairCreator> PairCreatorMap;
+  typedef std::map<std::string,BondCreator> BondCreatorMap;
+  typedef std::map<std::string,AngleCreator> AngleCreatorMap;
+  typedef std::map<std::string,DihedralCreator> DihedralCreatorMap;
+  typedef std::map<std::string,ImproperCreator> ImproperCreatorMap;
+  typedef std::map<std::string,KSpaceCreator> KSpaceCreatorMap;
+
+  PairCreatorMap *pair_map;
+  BondCreatorMap *bond_map;
+  AngleCreatorMap *angle_map;
+  DihedralCreatorMap *dihedral_map;
+  ImproperCreatorMap *improper_map;
+  KSpaceCreatorMap *kspace_map;
+
                              // index [0] is not used in these arrays
   double special_lj[4];      // 1-2, 1-3, 1-4 prefactors for LJ
   double special_coul[4];    // 1-2, 1-3, 1-4 prefactors for Coulombics
@@ -82,6 +104,7 @@ class Force : protected Pointers {
   void create_pair(const char *, int);
   class Pair *new_pair(const char *, int, int &);
   class Pair *pair_match(const char *, int, int nsub=0);
+  char *pair_match_ptr(Pair *);
 
   void create_bond(const char *, int);
   class Bond *new_bond(const char *, int, int &);
@@ -105,8 +128,8 @@ class Force : protected Pointers {
 
   void store_style(char *&, const char *, int);
   void set_special(int, char **);
-  void bounds(char *, int, int &, int &, int nmin=1);
-  void boundsbig(char *, bigint, bigint &, bigint &, bigint nmin=1);
+  void bounds(const char *, int, char *, int, int &, int &, int nmin=1);
+  void boundsbig(const char *, int, char *, bigint, bigint &, bigint &, bigint nmin=1);
   double numeric(const char *, int, char *);
   int inumeric(const char *, int, char *);
   bigint bnumeric(const char *, int, char *);
@@ -120,6 +143,11 @@ class Force : protected Pointers {
 
  private:
   template <typename T> static Pair *pair_creator(LAMMPS *);
+  template <typename T> static Bond *bond_creator(LAMMPS *);
+  template <typename T> static Angle *angle_creator(LAMMPS *);
+  template <typename T> static Dihedral *dihedral_creator(LAMMPS *);
+  template <typename T> static Improper *improper_creator(LAMMPS *);
+  template <typename T> static KSpace *kspace_creator(LAMMPS *, int, char **);
 };
 
 }

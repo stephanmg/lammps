@@ -32,7 +32,7 @@ class DeleteAtoms : protected Pointers {
 
  private:
   int *dlist;
-  int compress_flag,bond_flag,mol_flag;
+  int allflag,compress_flag,bond_flag,mol_flag;
   std::map<tagint,int> *hash;
 
   void delete_group(int, char **);
@@ -45,16 +45,14 @@ class DeleteAtoms : protected Pointers {
   void recount_topology();
   void options(int, char **);
 
-  inline int sbmask(int j) {
+  inline int sbmask(int j) const {
     return j >> SBBITS & 3;
   }
 
-  // static variable for ring communication callback to access class data
   // callback functions for ring communication
 
-  static DeleteAtoms *cptr;
-  static void bondring(int, char *);
-  static void molring(int, char *);
+  static void bondring(int, char *, void *);
+  static void molring(int, char *, void *);
 };
 
 }

@@ -60,13 +60,19 @@ void Velocity::command(int narg, char **arg)
 
   // atom masses must all be set
 
-  atom->check_mass();
+  atom->check_mass(FLERR);
 
   // identify group
 
   igroup = group->find(arg[0]);
   if (igroup == -1) error->all(FLERR,"Could not find velocity group ID");
   groupbit = group->bitmask[igroup];
+
+  // check if velocities of atoms in rigid bodies are updated
+
+  if (modify->check_rigid_group_overlap(groupbit))
+    error->warning(FLERR,"Changing velocities of atoms in rigid bodies. "
+                     "This has no effect unless rigid bodies are rebuild");
 
   // identify style
 
@@ -151,6 +157,7 @@ void Velocity::init_external(const char *extgroup)
   rotation_flag = 0;
   loop_flag = ALL;
   scale_flag = 1;
+  bias_flag = 0;
 }
 
 /* ---------------------------------------------------------------------- */

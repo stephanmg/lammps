@@ -14,12 +14,12 @@
 // C or Fortran style library interface to LAMMPS
 // customize by adding new LAMMPS-specific functions
 
-#include <mpi.h>
-#include <string.h>
-#include <stdlib.h>
+#include "lmptype.h"
+#include "mpi.h"
+#include "string.h"
+#include "stdlib.h"
 #include "library.h"
 #include "lammps.h"
-#include "universe.h"
 #include "input.h"
 #include "atom.h"
 #include "domain.h"
@@ -81,16 +81,6 @@ void lammps_close(void *ptr)
 }
 
 /* ----------------------------------------------------------------------
-   get the numerical representation of the current LAMMPS version
-------------------------------------------------------------------------- */
-
-int lammps_version(void *ptr)
-{
-  LAMMPS *lmp = (LAMMPS *) ptr;
-  return atoi(lmp->universe->num_ver);
-}
-
-/* ----------------------------------------------------------------------
    process an input script in filename str
 ------------------------------------------------------------------------- */
 
@@ -145,13 +135,8 @@ void *lammps_extract_global(void *ptr, char *name)
   if (strcmp(name,"boxyhi") == 0) return (void *) &lmp->domain->boxhi[1];
   if (strcmp(name,"boxzlo") == 0) return (void *) &lmp->domain->boxlo[2];
   if (strcmp(name,"boxzhi") == 0) return (void *) &lmp->domain->boxhi[2];
-  if (strcmp(name,"xy") == 0) return (void *) &lmp->domain->xy;
-  if (strcmp(name,"xz") == 0) return (void *) &lmp->domain->xz;
-  if (strcmp(name,"yz") == 0) return (void *) &lmp->domain->yz;
   if (strcmp(name,"natoms") == 0) return (void *) &lmp->atom->natoms;
   if (strcmp(name,"nlocal") == 0) return (void *) &lmp->atom->nlocal;
-  if (strcmp(name,"ntimestep") == 0) return (void *) &lmp->update->ntimestep;
-
   return NULL;
 }
 
@@ -270,7 +255,7 @@ void *lammps_extract_compute(void *ptr, char *id, int style, int type)
      so the caller must free this memory to avoid a leak, e.g.
        double *dptr = (double *) lammps_extract_fix();
        double value = *dptr;
-       lammps_free(dptr);
+       free(dptr);
    IMPORTANT: LAMMPS cannot easily check here when info extracted from
      the fix is valid, so caller must insure that it is OK
 ------------------------------------------------------------------------- */
@@ -335,11 +320,11 @@ void *lammps_extract_fix(void *ptr, char *id, int style, int type,
      e.g. for equal-style variables
        double *dptr = (double *) lammps_extract_variable();
        double value = *dptr;
-       lammps_free(dptr);
+       free(dptr);
      e.g. for atom-style variables
        double *vector = (double *) lammps_extract_variable();
        use the vector values
-       lammps_free(vector);
+       free(vector);
    IMPORTANT: LAMMPS cannot easily check here when it is valid to evaluate
      the variable or any fixes or computes or thermodynamic info it references,
      so caller must insure that it is OK
@@ -371,19 +356,6 @@ void *lammps_extract_variable(void *ptr, char *name, char *group)
 }
 
 /* ----------------------------------------------------------------------
-   set the value of a STRING variable to str
-   return -1 if variable doesn't exist or not a STRING variable
-   return 0 for success
-------------------------------------------------------------------------- */
-
-int lammps_set_variable(void *ptr, char *name, char *str)
-{
-  LAMMPS *lmp = (LAMMPS *) ptr;
-  int err = lmp->input->variable->set_string(name,str);
-  return err;
-}
-
-/* ----------------------------------------------------------------------
    return the total number of atoms in the system
    useful before call to lammps_get_atoms() so can pre-allocate vector
 ------------------------------------------------------------------------- */
@@ -391,7 +363,6 @@ int lammps_set_variable(void *ptr, char *name, char *str)
 int lammps_get_natoms(void *ptr)
 {
   LAMMPS *lmp = (LAMMPS *) ptr;
-
   if (lmp->atom->natoms > MAXSMALLINT) return 0;
   int natoms = static_cast<int> (lmp->atom->natoms);
   return natoms;
@@ -407,20 +378,18 @@ int lammps_get_natoms(void *ptr)
    data must be pre-allocated by caller to correct length
 ------------------------------------------------------------------------- */
 
-void lammps_gather_atoms(void *ptr, char *name,
+void lammps_gather_atoms(void *ptr, char *name, 
                          int type, int count, void *data)
 {
   LAMMPS *lmp = (LAMMPS *) ptr;
+
   // error if tags are not defined or not consecutive
+
   int flag = 0;
   if (lmp->atom->tag_enable == 0 || lmp->atom->tag_consecutive() == 0) flag = 1;
   if (lmp->atom->natoms > MAXSMALLINT) flag = 1;
-
-  /// check if error exists, then exit on all procs
-  if (flag) {
-    if (lmp->comm->me == 0) {
-       lmp->error->warning(FLERR,"Library error in lammps_gather_atoms");
-    }
+  if (flag && lmp->comm->me == 0) {
+    lmp->error->warning(FLERR,"Library error in lammps_gather_atoms");
     return;
   }
 
@@ -443,7 +412,7 @@ void lammps_gather_atoms(void *ptr, char *name,
     lmp->memory->create(copy,count*natoms,"lib/gather:copy");
     for (i = 0; i < count*natoms; i++) copy[i] = 0;
 
-    tagint *tag = lmp->atom->tag;
+    int *tag = lmp->atom->tag;
     int nlocal = lmp->atom->nlocal;
 
     if (count == 1)
@@ -469,7 +438,7 @@ void lammps_gather_atoms(void *ptr, char *name,
     lmp->memory->create(copy,count*natoms,"lib/gather:copy");
     for (i = 0; i < count*natoms; i++) copy[i] = 0.0;
 
-    tagint *tag = lmp->atom->tag;
+    int *tag = lmp->atom->tag;
     int nlocal = lmp->atom->nlocal;
 
     if (count == 1) {
@@ -501,17 +470,15 @@ void lammps_scatter_atoms(void *ptr, char *name,
                           int type, int count, void *data)
 {
   LAMMPS *lmp = (LAMMPS *) ptr;
+
   // error if tags are not defined or not consecutive or no atom map
+
   int flag = 0;
   if (lmp->atom->tag_enable == 0 || lmp->atom->tag_consecutive() == 0) flag = 1;
   if (lmp->atom->natoms > MAXSMALLINT) flag = 1;
   if (lmp->atom->map_style == 0) flag = 1;
-  
-  /// check if error exists, then exit on all procs
-  if (flag) {
-    if (lmp->comm->me == 0) {
-       lmp->error->warning(FLERR,"Library error in lammps_scatter_atoms");
-    }
+  if (flag && lmp->comm->me == 0) {
+    lmp->error->warning(FLERR,"Library error in lammps_scatter_atoms");
     return;
   }
 

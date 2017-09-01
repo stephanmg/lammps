@@ -34,7 +34,7 @@ enum{ISO,ANISO,TRICLINIC}; // same as fix_nh.cpp
 /* ---------------------------------------------------------------------- */
 
 FixNPHug::FixNPHug(LAMMPS *lmp, int narg, char **arg) :
-  FixNH(lmp, narg, arg)
+  FixNH(lmp, narg, arg), pe(NULL), id_pe(NULL)
 {
 
   // Prevent masses from being updated every timestep
@@ -135,7 +135,7 @@ FixNPHug::FixNPHug(LAMMPS *lmp, int narg, char **arg) :
 
   modify->add_compute(3,newarg);
   delete [] newarg;
-  tflag = 1;
+  tcomputeflag = 1;
 
   // create a new compute pressure style
   // id = fix-ID + press, compute group = all
@@ -153,7 +153,7 @@ FixNPHug::FixNPHug(LAMMPS *lmp, int narg, char **arg) :
   newarg[3] = id_temp;
   modify->add_compute(4,newarg);
   delete [] newarg;
-  pflag = 1;
+  pcomputeflag = 1;
 
   // create a new compute potential energy compute
 
@@ -231,6 +231,7 @@ void FixNPHug::setup(int vflag)
   rho0 = nktv2p*force->mvv2e*masstot/v0;
 
   t_target = 0.01;
+  ke_target = tdof*boltz*t_target;
 
   pe->addstep(update->ntimestep+1);
 }

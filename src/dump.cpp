@@ -30,9 +30,12 @@
 
 using namespace LAMMPS_NS;
 
+#if defined(LMP_QSORT)
 // allocate space for static class variable
-
 Dump *Dump::dumpptr;
+#else
+#include "mergesort.h"
+#endif
 
 #define BIG 1.0e20
 #define EPSILON 1.0e-6
@@ -65,15 +68,23 @@ Dump::Dump(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 
   first_flag = 0;
   flush_flag = 1;
+
   format = NULL;
-  format_user = NULL;
   format_default = NULL;
+
+  format_line_user = NULL;
+  format_float_user = NULL;
+  format_int_user = NULL;
+  format_bigint_user = NULL;
+  format_column_user = NULL;
+
   clearstep = 0;
   sort_flag = 0;
   append_flag = 0;
   buffer_allow = 0;
   buffer_flag = 0;
   padflag = 0;
+  pbcflag = 0;
 
   maxbuf = maxids = maxsort = maxproc = 0;
   buf = bufsort = NULL;
@@ -83,6 +94,10 @@ Dump::Dump(LAMMPS *lmp, int narg, char **arg) : Pointers(lmp)
 
   maxsbuf = 0;
   sbuf = NULL;
+
+  maxpbc = 0;
+  xpbc = vpbc = NULL;
+  imagepbc = NULL;
 
   // parse filename for special syntax
   // if contains '%', write one file per proc and replace % with proc-ID
@@ -140,7 +155,12 @@ Dump::~Dump()
 
   delete [] format;
   delete [] format_default;
-  delete [] format_user;
+  delete [] format_line_user;
+  delete [] format_float_user;
+  delete [] format_int_user;
+  delete [] format_bigint_user;
+
+  // format_column_user is deallocated by child classes that use it
 
   memory->destroy(buf);
   memory->destroy(bufsort);
@@ -151,6 +171,12 @@ Dump::~Dump()
   delete irregular;
 
   memory->destroy(sbuf);
+
+  if (pbcflag) {
+    memory->destroy(xpbc);
+    memory->destroy(vpbc);
+    memory->destroy(imagepbc);
+  }
 
   if (multiproc) MPI_Comm_free(&clustercomm);
 
@@ -233,7 +259,7 @@ void Dump::init()
       if (maxall-minall+1 == isize) {
         reorderflag = 1;
         double range = maxall-minall + EPSILON;
-        idlo = static_cast<int> (range*me/nprocs + minall);
+        idlo = static_cast<tagint> (range*me/nprocs + minall);
         tagint idhi = static_cast<tagint> (range*(me+1)/nprocs + minall);
 
         tagint lom1 = static_cast<tagint> ((idlo-1-minall)/range * nprocs);
@@ -250,6 +276,10 @@ void Dump::init()
       }
     }
   }
+
+  // preallocation for PBC copies if requested
+
+  if (pbcflag && atom->nlocal > maxpbc) pbc_allocate();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -271,6 +301,9 @@ int Dump::count()
 
 void Dump::write()
 {
+  imageint *imagehold;
+  double **xhold,**vhold;
+
   // if file per timestep, open new file
 
   if (multifile) openfile();
@@ -338,6 +371,25 @@ void Dump::write()
     maxids = nmax;
     memory->destroy(ids);
     memory->create(ids,maxids,"dump:ids");
+  }
+
+  // apply PBC on copy of x,v,image if requested
+
+  if (pbcflag) {
+    int nlocal = atom->nlocal;
+    if (nlocal > maxpbc) pbc_allocate();
+    if (nlocal) {
+      memcpy(&xpbc[0][0],&atom->x[0][0],3*nlocal*sizeof(double));
+      memcpy(&vpbc[0][0],&atom->v[0][0],3*nlocal*sizeof(double));
+      memcpy(imagepbc,atom->image,nlocal*sizeof(imageint));
+    }
+    xhold = atom->x;
+    vhold = atom->v;
+    imagehold = atom->image;
+    atom->x = xpbc;
+    atom->v = vpbc;
+    atom->image = imagepbc;
+    domain->pbc();
   }
 
   // pack my data into buf
@@ -416,6 +468,14 @@ void Dump::write()
       MPI_Recv(&tmp,0,MPI_INT,fileproc,0,world,MPI_STATUS_IGNORE);
       MPI_Rsend(sbuf,nsme,MPI_CHAR,fileproc,0,world);
     }
+  }
+
+  // restore original x,v,image unaltered by PBC
+
+  if (pbcflag) {
+    atom->x = xhold;
+    atom->v = vhold;
+    atom->image = imagehold;
   }
 
   // if file per timestep, close file if I am filewriter
@@ -579,9 +639,13 @@ void Dump::sort()
       MPI_Allreduce(&max,&maxall,1,MPI_DOUBLE,MPI_MAX,world);
       double range = maxall-minall + EPSILON*(maxall-minall);
       if (range == 0.0) range = EPSILON;
+
+      // proc assignment is inverted if sortorder = DESCEND
+
       for (i = 0; i < nme; i++) {
         value = buf[i*size_one + sortcolm1];
         iproc = static_cast<int> ((value-minall)/range * nprocs);
+        if (sortorder == DESCEND) iproc = nprocs-1 - iproc;
         proclist[i] = iproc;
       }
     }
@@ -628,6 +692,7 @@ void Dump::sort()
         index[idsort[i]-idlo] = i;
   }
 
+#if defined(LMP_QSORT)
   if (!reorderflag) {
     dumpptr = this;
     for (i = 0; i < nme; i++) index[i] = i;
@@ -635,6 +700,14 @@ void Dump::sort()
     else if (sortorder == ASCEND) qsort(index,nme,sizeof(int),bufcompare);
     else qsort(index,nme,sizeof(int),bufcompare_reverse);
   }
+#else
+  if (!reorderflag) {
+    for (i = 0; i < nme; i++) index[i] = i;
+    if (sortcol == 0) merge_sort(index,nme,(void *)this,idcompare);
+    else if (sortorder == ASCEND) merge_sort(index,nme,(void *)this,bufcompare);
+    else merge_sort(index,nme,(void *)this,bufcompare_reverse);
+  }
+#endif
 
   // reset buf size and maxbuf to largest of any post-sort nme values
   // this insures proc 0 can receive everyone's info
@@ -654,6 +727,8 @@ void Dump::sort()
   for (i = 0; i < nme; i++)
     memcpy(&buf[i*size_one],&bufsort[index[i]*size_one],nbytes);
 }
+
+#if defined(LMP_QSORT)
 
 /* ----------------------------------------------------------------------
    compare two atom IDs
@@ -714,6 +789,65 @@ int Dump::bufcompare_reverse(const void *pi, const void *pj)
   if (bufsort[i] < bufsort[j]) return 1;
   return 0;
 }
+
+#else
+
+/* ----------------------------------------------------------------------
+   compare two atom IDs
+   called via merge_sort() in sort() method
+------------------------------------------------------------------------- */
+
+int Dump::idcompare(const int i, const int j, void *ptr)
+{
+  tagint *idsort = ((Dump *)ptr)->idsort;
+  if (idsort[i] < idsort[j]) return -1;
+  else if (idsort[i] > idsort[j]) return 1;
+  else return 0;
+}
+
+/* ----------------------------------------------------------------------
+   compare two buffer values with size_one stride
+   called via merge_sort() in sort() method
+   sort in ASCENDing order
+------------------------------------------------------------------------- */
+
+int Dump::bufcompare(const int i, const int j, void *ptr)
+{
+  Dump *dptr = (Dump *) ptr;
+  double *bufsort     = dptr->bufsort;
+  const int size_one  = dptr->size_one;
+  const int sortcolm1 = dptr->sortcolm1;
+
+  const int ii=i*size_one + sortcolm1;
+  const int jj=j*size_one + sortcolm1;
+
+  if (bufsort[ii] < bufsort[jj]) return -1;
+  else if (bufsort[ii] > bufsort[jj]) return 1;
+  else return 0;
+}
+
+/* ----------------------------------------------------------------------
+   compare two buffer values with size_one stride
+   called via merge_sort() in sort() method
+   sort in DESCENDing order
+------------------------------------------------------------------------- */
+
+int Dump::bufcompare_reverse(const int i, const int j, void *ptr)
+{
+  Dump *dptr = (Dump *) ptr;
+  double *bufsort     = dptr->bufsort;
+  const int size_one  = dptr->size_one;
+  const int sortcolm1 = dptr->sortcolm1;
+
+  const int ii=i*size_one + sortcolm1;
+  const int jj=j*size_one + sortcolm1;
+
+  if (bufsort[ii] < bufsort[jj]) return 1;
+  else if (bufsort[ii] > bufsort[jj]) return -1;
+  else return 0;
+}
+
+#endif
 
 /* ----------------------------------------------------------------------
    process params common to all dumps here
@@ -805,14 +939,36 @@ void Dump::modify_params(int narg, char **arg)
 
     } else if (strcmp(arg[iarg],"format") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal dump_modify command");
-      delete [] format_user;
-      format_user = NULL;
-      if (strcmp(arg[iarg+1],"none")) {
-        int n = strlen(arg[iarg+1]) + 1;
-        format_user = new char[n];
-        strcpy(format_user,arg[iarg+1]);
+
+      if (strcmp(arg[iarg+1],"none") == 0) {
+        delete [] format_line_user;
+        delete [] format_int_user;
+        delete [] format_bigint_user;
+        delete [] format_float_user;
+        format_line_user = NULL;
+        format_int_user = NULL;
+        format_bigint_user = NULL;
+        format_float_user = NULL;
+        // pass format none to child classes which may use it
+        // not an error if they don't
+        modify_param(narg-iarg,&arg[iarg]);
+        iarg += 2;
+        continue;
       }
-      iarg += 2;
+
+      if (iarg+3 > narg) error->all(FLERR,"Illegal dump_modify command");
+
+      if (strcmp(arg[iarg+1],"line") == 0) {
+        delete [] format_line_user;
+        int n = strlen(arg[iarg+2]) + 1;
+        format_line_user = new char[n];
+        strcpy(format_line_user,arg[iarg+2]);
+        iarg += 3;
+      } else {   // pass other format options to child classes
+        int n = modify_param(narg-iarg,&arg[iarg]);
+        if (n == 0) error->all(FLERR,"Illegal dump_modify command");
+        iarg += n;
+      }
 
     } else if (strcmp(arg[iarg],"nfile") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal dump_modify command");
@@ -853,6 +1009,13 @@ void Dump::modify_params(int narg, char **arg)
       if (padflag < 0) error->all(FLERR,"Illegal dump_modify command");
       iarg += 2;
 
+    } else if (strcmp(arg[iarg],"pbc") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal dump_modify command");
+      if (strcmp(arg[iarg+1],"yes") == 0) pbcflag = 1;
+      else if (strcmp(arg[iarg+1],"no") == 0) pbcflag = 0;
+      else error->all(FLERR,"Illegal dump_modify command");
+      iarg += 2;
+
     } else if (strcmp(arg[iarg],"sort") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal dump_modify command");
       if (strcmp(arg[iarg+1],"off") == 0) sort_flag = 0;
@@ -885,6 +1048,21 @@ void Dump::modify_params(int narg, char **arg)
    return # of bytes of allocated memory
 ------------------------------------------------------------------------- */
 
+void Dump::pbc_allocate()
+{
+  memory->destroy(xpbc);
+  memory->destroy(vpbc);
+  memory->destroy(imagepbc);
+  maxpbc = atom->nmax;
+  memory->create(xpbc,maxpbc,3,"dump:xbpc");
+  memory->create(vpbc,maxpbc,3,"dump:vbpc");
+  memory->create(imagepbc,maxpbc,"dump:imagebpc");
+}
+
+/* ----------------------------------------------------------------------
+   return # of bytes of allocated memory
+------------------------------------------------------------------------- */
+
 bigint Dump::memory_usage()
 {
   bigint bytes = memory->usage(buf,size_one*maxbuf);
@@ -896,6 +1074,10 @@ bigint Dump::memory_usage()
     bytes += memory->usage(index,maxsort);
     bytes += memory->usage(proclist,maxproc);
     if (irregular) bytes += irregular->memory_usage();
+  }
+  if (pbcflag) {
+    bytes += 6*maxpbc * sizeof(double);
+    bytes += maxpbc * sizeof(imageint);
   }
   return bytes;
 }

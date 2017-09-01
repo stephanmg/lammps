@@ -24,7 +24,7 @@
   <http://www.gnu.org/licenses/>.
   ----------------------------------------------------------------------*/
 
-#include "pair_reax_c.h"
+#include "pair_reaxc.h"
 #include "reaxc_traj.h"
 #include "reaxc_list.h"
 #include "reaxc_tool_box.h"
@@ -101,7 +101,7 @@ int Write_Header( reax_system *system, control_params *control,
              out_control->traj_title );
     strncat( out_control->buffer, out_control->line, HEADER_LINE_LEN+1 );
 
-    sprintf( out_control->line, INT_LINE, "number_of_atoms:", system->bigN );
+    sprintf( out_control->line, BIGINT_LINE, "number_of_atoms:", system->bigN );
     strncat( out_control->buffer, out_control->line, HEADER_LINE_LEN+1 );
 
     sprintf( out_control->line, STR_LINE, "ensemble_type:",

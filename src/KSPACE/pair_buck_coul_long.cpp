@@ -240,7 +240,7 @@ void PairBuckCoulLong::settings(int narg, char **arg)
   if (allocated) {
     int i,j;
     for (i = 1; i <= atom->ntypes; i++)
-      for (j = i+1; j <= atom->ntypes; j++)
+      for (j = i; j <= atom->ntypes; j++)
         if (setflag[i][j]) cut_lj[i][j] = cut_lj_global;
   }
 }
@@ -256,8 +256,8 @@ void PairBuckCoulLong::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(arg[1],atom->ntypes,jlo,jhi);
+  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
+  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
 
   double a_one = force->numeric(FLERR,arg[2]);
   double rho_one = force->numeric(FLERR,arg[3]);
@@ -297,7 +297,7 @@ double PairBuckCoulLong::init_one(int i, int j)
   buck1[i][j] = a[i][j]/rho[i][j];
   buck2[i][j] = 6.0*c[i][j];
 
-  if (offset_flag) {
+  if (offset_flag && (cut_lj[i][j] > 0.0)) {
     double rexp = exp(-cut_lj[i][j]/rho[i][j]);
     offset[i][j] = a[i][j]*rexp - c[i][j]/pow(cut_lj[i][j],6.0);
   } else offset[i][j] = 0.0;

@@ -26,17 +26,23 @@
 #include "force.h"
 #include "modify.h"
 #include "fix.h"
+#include "compute.h"
 #include "output.h"
 #include "thermo.h"
 #include "update.h"
 #include "domain.h"
 #include "group.h"
+#include "input.h"
+#include "variable.h"
 #include "molecule.h"
-#include "accelerator_cuda.h"
 #include "atom_masks.h"
 #include "math_const.h"
 #include "memory.h"
 #include "error.h"
+
+#ifdef LMP_USER_INTEL
+#include "neigh_request.h"
+#endif
 
 using namespace LAMMPS_NS;
 using namespace MathConst;
@@ -44,7 +50,6 @@ using namespace MathConst;
 #define DELTA 1
 #define DELTA_MEMSTR 1024
 #define EPSILON 1.0e-6
-#define CUDA_CHUNK 3000
 
 enum{LAYOUT_UNIFORM,LAYOUT_NONUNIFORM,LAYOUT_TILED};    // several files
 
@@ -96,8 +101,14 @@ Atom::Atom(LAMMPS *lmp) : Pointers(lmp)
   // USER-DPD
 
   uCond = uMech = uChem = uCG = uCGnew = NULL;
-  duCond = duMech = duChem = NULL;
+  duChem = NULL;
   dpdTheta = NULL;
+  ssaAIR = NULL;
+
+  // USER-MESO
+
+  cc = cc_flux = NULL;
+  edpd_temp = edpd_flux = edpd_cv = NULL;
 
   // USER-SMD
 
@@ -163,7 +174,7 @@ Atom::Atom(LAMMPS *lmp) : Pointers(lmp)
   cs_flag = csforce_flag = vforce_flag = etag_flag = 0;
 
   rho_flag = e_flag = cv_flag = vest_flag = 0;
-  dpd_flag = 0;
+  dpd_flag = edpd_flag = tdpd_flag = 0;
 
   // USER-SMD
 
@@ -209,8 +220,14 @@ Atom::Atom(LAMMPS *lmp) : Pointers(lmp)
   atom_style = NULL;
   avec = NULL;
 
-  datamask = ALL_MASK;
-  datamask_ext = ALL_MASK;
+  avec_map = new AtomVecCreatorMap();
+
+#define ATOM_CLASS
+#define AtomStyle(key,Class) \
+  (*avec_map)[#key] = &avec_creator<Class>;
+#include "style_atom.h"
+#undef AtomStyle
+#undef ATOM_CLASS
 }
 
 /* ---------------------------------------------------------------------- */
@@ -219,6 +236,7 @@ Atom::~Atom()
 {
   delete [] atom_style;
   delete avec;
+  delete avec_map;
 
   delete [] firstgroupname;
   memory->destroy(binhead);
@@ -286,9 +304,14 @@ Atom::~Atom()
   memory->destroy(uChem);
   memory->destroy(uCG);
   memory->destroy(uCGnew);
-  memory->destroy(duCond);
-  memory->destroy(duMech);
   memory->destroy(duChem);
+  memory->destroy(ssaAIR);
+
+  memory->destroy(cc);
+  memory->destroy(cc_flux);
+  memory->destroy(edpd_temp);
+  memory->destroy(edpd_flux);
+  memory->destroy(edpd_cv);
 
   memory->destroy(nspecial);
   memory->destroy(special);
@@ -382,6 +405,8 @@ void Atom::create_avec(const char *style, int narg, char **arg, int trysuffix)
 {
   delete [] atom_style;
   if (avec) delete avec;
+  atom_style = NULL;
+  avec = NULL;
 
   // unset atom style and array existence flags
   // may have been set by old avec
@@ -447,44 +472,41 @@ AtomVec *Atom::new_avec(const char *style, int trysuffix, int &sflag)
       sflag = 1;
       char estyle[256];
       sprintf(estyle,"%s/%s",style,lmp->suffix);
-
-      if (0) return NULL;
-
-#define ATOM_CLASS
-#define AtomStyle(key,Class) \
-      else if (strcmp(estyle,#key) == 0) return new Class(lmp);
-#include "style_atom.h"
-#undef AtomStyle
-#undef ATOM_CLASS
+      if (avec_map->find(estyle) != avec_map->end()) {
+        AtomVecCreator avec_creator = (*avec_map)[estyle];
+        return avec_creator(lmp);
+      }
     }
 
     if (lmp->suffix2) {
       sflag = 2;
       char estyle[256];
       sprintf(estyle,"%s/%s",style,lmp->suffix2);
-
-      if (0) return NULL;
-
-#define ATOM_CLASS
-#define AtomStyle(key,Class) \
-      else if (strcmp(estyle,#key) == 0) return new Class(lmp);
-#include "style_atom.h"
-#undef AtomStyle
-#undef ATOM_CLASS
+      if (avec_map->find(estyle) != avec_map->end()) {
+        AtomVecCreator avec_creator = (*avec_map)[estyle];
+        return avec_creator(lmp);
+      }
     }
   }
 
   sflag = 0;
-  if (0) return NULL;
+  if (avec_map->find(style) != avec_map->end()) {
+    AtomVecCreator avec_creator = (*avec_map)[style];
+    return avec_creator(lmp);
+  }
 
-#define ATOM_CLASS
-#define AtomStyle(key,Class) \
-  else if (strcmp(style,#key) == 0) return new Class(lmp);
-#include "style_atom.h"
-#undef ATOM_CLASS
-
-  else error->all(FLERR,"Unknown atom style");
+  error->all(FLERR,"Unknown atom style");
   return NULL;
+}
+
+/* ----------------------------------------------------------------------
+   one instance per AtomVec style in style_atom.h
+------------------------------------------------------------------------- */
+
+template <typename T>
+AtomVec *Atom::avec_creator(LAMMPS *lmp)
+{
+  return new T(lmp);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -501,7 +523,7 @@ void Atom::init()
 
   // check arrays that are atom type in length
 
-  check_mass();
+  check_mass(FLERR);
 
   // setup of firstgroup
 
@@ -1387,6 +1409,33 @@ void Atom::data_bodies(int n, char *buf, AtomVecBody *avec_body,
 }
 
 /* ----------------------------------------------------------------------
+   init per-atom fix/compute/variable values for newly created atoms
+   called from create_atoms, read_data, read_dump,
+     lib::lammps_create_atoms()
+   fixes, computes, variables may or may not exist when called
+------------------------------------------------------------------------- */
+
+void Atom::data_fix_compute_variable(int nprev, int nnew)
+{
+  for (int m = 0; m < modify->nfix; m++) {
+    Fix *fix = modify->fix[m];
+    if (fix->create_attribute)
+      for (int i = nprev; i < nnew; i++)
+        fix->set_arrays(i);
+  }
+
+  for (int m = 0; m < modify->ncompute; m++) {
+    Compute *compute = modify->compute[m];
+    if (compute->create_attribute)
+      for (int i = nprev; i < nnew; i++)
+        compute->set_arrays(i);
+  }
+
+  for (int i = nprev; i < nnew; i++)
+    input->variable->set_arrays(i);
+}
+
+/* ----------------------------------------------------------------------
    allocate arrays of length ntypes
    only done after ntypes is set
 ------------------------------------------------------------------------- */
@@ -1406,23 +1455,23 @@ void Atom::allocate_type_arrays()
    type_offset may be used when reading multiple data files
 ------------------------------------------------------------------------- */
 
-void Atom::set_mass(const char *str, int type_offset)
+void Atom::set_mass(const char *file, int line, const char *str, int type_offset)
 {
-  if (mass == NULL) error->all(FLERR,"Cannot set mass for this atom style");
+  if (mass == NULL) error->all(file,line,"Cannot set mass for this atom style");
 
   int itype;
   double mass_one;
   int n = sscanf(str,"%d %lg",&itype,&mass_one);
-  if (n != 2) error->all(FLERR,"Invalid mass line in data file");
+  if (n != 2) error->all(file,line,"Invalid mass line in data file");
   itype += type_offset;
 
   if (itype < 1 || itype > ntypes)
-    error->all(FLERR,"Invalid type for mass set");
+    error->all(file,line,"Invalid type for mass set");
 
   mass[itype] = mass_one;
   mass_setflag[itype] = 1;
 
-  if (mass[itype] <= 0.0) error->all(FLERR,"Invalid mass value");
+  if (mass[itype] <= 0.0) error->all(file,line,"Invalid mass value");
 }
 
 /* ----------------------------------------------------------------------
@@ -1430,16 +1479,16 @@ void Atom::set_mass(const char *str, int type_offset)
    called from EAM pair routine
 ------------------------------------------------------------------------- */
 
-void Atom::set_mass(int itype, double value)
+void Atom::set_mass(const char *file, int line, int itype, double value)
 {
-  if (mass == NULL) error->all(FLERR,"Cannot set mass for this atom style");
+  if (mass == NULL) error->all(file,line,"Cannot set mass for this atom style");
   if (itype < 1 || itype > ntypes)
-    error->all(FLERR,"Invalid type for mass set");
+    error->all(file,line,"Invalid type for mass set");
 
   mass[itype] = value;
   mass_setflag[itype] = 1;
 
-  if (mass[itype] <= 0.0) error->all(FLERR,"Invalid mass value");
+  if (mass[itype] <= 0.0) error->all(file,line,"Invalid mass value");
 }
 
 /* ----------------------------------------------------------------------
@@ -1447,19 +1496,19 @@ void Atom::set_mass(int itype, double value)
    called from reading of input script
 ------------------------------------------------------------------------- */
 
-void Atom::set_mass(int narg, char **arg)
+void Atom::set_mass(const char *file, int line, int narg, char **arg)
 {
-  if (mass == NULL) error->all(FLERR,"Cannot set mass for this atom style");
+  if (mass == NULL) error->all(file,line,"Cannot set mass for this atom style");
 
   int lo,hi;
-  force->bounds(arg[0],ntypes,lo,hi);
-  if (lo < 1 || hi > ntypes) error->all(FLERR,"Invalid type for mass set");
+  force->bounds(file,line,arg[0],ntypes,lo,hi);
+  if (lo < 1 || hi > ntypes) error->all(file,line,"Invalid type for mass set");
 
   for (int itype = lo; itype <= hi; itype++) {
     mass[itype] = atof(arg[1]);
     mass_setflag[itype] = 1;
 
-    if (mass[itype] <= 0.0) error->all(FLERR,"Invalid mass value");
+    if (mass[itype] <= 0.0) error->all(file,line,"Invalid mass value");
   }
 }
 
@@ -1476,14 +1525,16 @@ void Atom::set_mass(double *values)
 }
 
 /* ----------------------------------------------------------------------
-   check that all masses have been set
+   check that all per-atom-type masses have been set
 ------------------------------------------------------------------------- */
 
-void Atom::check_mass()
+void Atom::check_mass(const char *file, int line)
 {
   if (mass == NULL) return;
+  if (rmass_flag) return;
   for (int itype = 1; itype <= ntypes; itype++)
-    if (mass_setflag[itype] == 0) error->all(FLERR,"All masses are not set");
+    if (mass_setflag[itype] == 0) 
+      error->all(file,line,"Not all per-type masses are set");
 }
 
 /* ----------------------------------------------------------------------
@@ -1590,6 +1641,7 @@ void Atom::add_molecule(int narg, char **arg)
 
 int Atom::find_molecule(char *id)
 {
+  if(id == NULL) return -1;
   int imol;
   for (imol = 0; imol < nmolecule; imol++)
     if (strcmp(id,molecules[imol]->id) == 0) return imol;
@@ -1598,7 +1650,7 @@ int Atom::find_molecule(char *id)
 
 /* ----------------------------------------------------------------------
    add info to current atom ilocal from molecule template onemol and its iatom
-   offset = atom ID preceeding IDs of atoms in this molecule
+   offset = atom ID preceding IDs of atoms in this molecule
    called by fixes and commands that add molecules
 ------------------------------------------------------------------------- */
 
@@ -1716,10 +1768,6 @@ void Atom::sort()
 
   nextsort = (update->ntimestep/sortfreq)*sortfreq + sortfreq;
 
-  // download data from GPU if necessary
-
-  if (lmp->cuda && !lmp->cuda->oncpu) lmp->cuda->downloadAll();
-
   // re-setup sort bins if needed
 
   if (domain->box_change) setup_sort_bins();
@@ -1795,10 +1843,6 @@ void Atom::sort()
     current[empty] = permute[empty];
   }
 
-  // upload data back to GPU if necessary
-
-  if (lmp->cuda && !lmp->cuda->oncpu) lmp->cuda->uploadAll();
-
   // sanity check that current = permute
 
   //int flag = 0;
@@ -1817,25 +1861,12 @@ void Atom::setup_sort_bins()
 {
   // binsize:
   // user setting if explicitly set
-  // 1/2 of neighbor cutoff for non-CUDA
-  // CUDA_CHUNK atoms/proc for CUDA
+  // default = 1/2 of neighbor cutoff
   // check if neighbor cutoff = 0.0
 
   double binsize;
   if (userbinsize > 0.0) binsize = userbinsize;
-  else if (!lmp->cuda) binsize = 0.5 * neighbor->cutneighmax;
-  else {
-    if (domain->dimension == 3) {
-      double vol = (domain->boxhi[0]-domain->boxlo[0]) *
-        (domain->boxhi[1]-domain->boxlo[1]) *
-        (domain->boxhi[2]-domain->boxlo[2]);
-      binsize = pow(1.0*CUDA_CHUNK/natoms*vol,1.0/3.0);
-    } else {
-      double area = (domain->boxhi[0]-domain->boxlo[0]) *
-        (domain->boxhi[1]-domain->boxlo[1]);
-      binsize = pow(1.0*CUDA_CHUNK/natoms*area,1.0/2.0);
-    }
-  }
+  else binsize = 0.5 * neighbor->cutneighmax;
   if (binsize == 0.0) error->all(FLERR,"Atom sorting has bin size = 0.0");
 
   double bininv = 1.0/binsize;
@@ -1866,6 +1897,53 @@ void Atom::setup_sort_bins()
   bininvx = nbinx / (bboxhi[0]-bboxlo[0]);
   bininvy = nbiny / (bboxhi[1]-bboxlo[1]);
   bininvz = nbinz / (bboxhi[2]-bboxlo[2]);
+
+  #ifdef LMP_USER_INTEL
+  int intel_neigh = 0;
+  if (neighbor->nrequest) {
+    if (neighbor->requests[0]->intel) intel_neigh = 1;
+  } else if (neighbor->old_nrequest)
+    if (neighbor->old_requests[0]->intel) intel_neigh = 1;
+  if (intel_neigh && userbinsize == 0.0) {
+    if (neighbor->binsizeflag) bininv = 1.0/neighbor->binsize_user;
+
+    double nx_low = neighbor->bboxlo[0];
+    double ny_low = neighbor->bboxlo[1];
+    double nz_low = neighbor->bboxlo[2];
+    double nxbbox = neighbor->bboxhi[0] - nx_low;
+    double nybbox = neighbor->bboxhi[1] - ny_low;
+    double nzbbox = neighbor->bboxhi[2] - nz_low;
+    int nnbinx = static_cast<int> (nxbbox * bininv);
+    int nnbiny = static_cast<int> (nybbox * bininv);
+    int nnbinz = static_cast<int> (nzbbox * bininv);
+    if (domain->dimension == 2) nnbinz = 1;
+
+    if (nnbinx == 0) nnbinx = 1;
+    if (nnbiny == 0) nnbiny = 1;
+    if (nnbinz == 0) nnbinz = 1;
+
+    double binsizex = nxbbox/nnbinx;
+    double binsizey = nybbox/nnbiny;
+    double binsizez = nzbbox/nnbinz;
+
+    bininvx = 1.0 / binsizex;
+    bininvy = 1.0 / binsizey;
+    bininvz = 1.0 / binsizez;
+
+    int lxo = (bboxlo[0] - nx_low) * bininvx;
+    int lyo = (bboxlo[1] - ny_low) * bininvy;
+    int lzo = (bboxlo[2] - nz_low) * bininvz;
+    bboxlo[0] = nx_low + static_cast<double>(lxo) / bininvx;
+    bboxlo[1] = ny_low + static_cast<double>(lyo) / bininvy;
+    bboxlo[2] = nz_low + static_cast<double>(lzo) / bininvz;
+    nbinx = static_cast<int>((bboxhi[0] - bboxlo[0]) * bininvx) + 1;
+    nbiny = static_cast<int>((bboxhi[1] - bboxlo[1]) * bininvy) + 1;
+    nbinz = static_cast<int>((bboxhi[2] - bboxlo[2]) * bininvz) + 1;
+    bboxhi[0] = bboxlo[0] + static_cast<double>(nbinx) / bininvx;
+    bboxhi[1] = bboxlo[1] + static_cast<double>(nbiny) / bininvy;
+    bboxhi[2] = bboxlo[2] + static_cast<double>(nbinz) / bininvz;
+  }
+  #endif
 
   if (1.0*nbinx*nbiny*nbinz > INT_MAX)
     error->one(FLERR,"Too many atom sorting bins");
@@ -1935,6 +2013,8 @@ void Atom::add_callback(int flag)
 
 void Atom::delete_callback(const char *id, int flag)
 {
+  if (id == NULL) return;
+
   int ifix;
   for (ifix = 0; ifix < modify->nfix; ifix++)
     if (strcmp(id,modify->fix[ifix]->id) == 0) break;
@@ -1988,8 +2068,10 @@ void Atom::update_callback(int ifix)
    return -1 if not found
 ------------------------------------------------------------------------- */
 
-int Atom::find_custom(char *name, int &flag)
+int Atom::find_custom(const char *name, int &flag)
 {
+  if(name == NULL) return -1;
+
   for (int i = 0; i < nivector; i++)
     if (iname[i] && strcmp(iname[i],name) == 0) {
       flag = 0;
@@ -2011,7 +2093,7 @@ int Atom::find_custom(char *name, int &flag)
    return index in ivector or dvector of its location
 ------------------------------------------------------------------------- */
 
-int Atom::add_custom(char *name, int flag)
+int Atom::add_custom(const char *name, int flag)
 {
   int index;
 
@@ -2123,6 +2205,7 @@ void *Atom::extract(char *name)
   if (strcmp(name, "damage") == 0) return (void *) damage;
 
   if (strcmp(name,"dpdTheta") == 0) return (void *) dpdTheta;
+  if (strcmp(name,"edpd_temp") == 0) return (void *) edpd_temp;
 
   return NULL;
 }

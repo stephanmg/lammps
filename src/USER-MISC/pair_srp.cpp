@@ -408,7 +408,7 @@ void PairSRP::settings(int narg, char **arg)
   if (allocated) {
     int i,j;
     for (i = 1; i <= bptype; i++)
-      for (j = i+1; j <= bptype; j++)
+      for (j = i; j <= bptype; j++)
         if (setflag[i][j]) cut[i][j] = cut_global;
   }
 }
@@ -425,8 +425,8 @@ void PairSRP::coeff(int narg, char **arg)
 
     // set ij bond-bond cutoffs
     int ilo, ihi, jlo, jhi;
-    force->bounds(arg[0], bptype, ilo, ihi);
-    force->bounds(arg[1], bptype, jlo, jhi);
+    force->bounds(FLERR,arg[0], bptype, ilo, ihi);
+    force->bounds(FLERR,arg[1], bptype, jlo, jhi);
 
     double a0_one = force->numeric(FLERR,arg[2]);
     double cut_one = cut_global;

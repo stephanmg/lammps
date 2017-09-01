@@ -18,6 +18,7 @@
 #include <mpi.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dihedral_charmm.h"
 #include "atom.h"
 #include "comm.h"
@@ -26,6 +27,7 @@
 #include "force.h"
 #include "pair.h"
 #include "update.h"
+#include "respa.h"
 #include "math_const.h"
 #include "memory.h"
 #include "error.h"
@@ -330,7 +332,7 @@ void DihedralCharmm::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi;
-  force->bounds(arg[0],atom->ndihedraltypes,ilo,ihi);
+  force->bounds(FLERR,arg[0],atom->ndihedraltypes,ilo,ihi);
 
   // require integer values of shift for backwards compatibility
   // arbitrary phase angle shift could be allowed, but would break
@@ -368,10 +370,26 @@ void DihedralCharmm::coeff(int narg, char **arg)
 
 void DihedralCharmm::init_style()
 {
+  if (strstr(update->integrate_style,"respa")) {
+    Respa *r = (Respa *) update->integrate;
+    if (r->level_pair >= 0 && (r->level_pair != r->level_dihedral))
+      error->all(FLERR,"Dihedral style charmm must be set to same"
+                 " r-RESPA level as 'pair'");
+    if (r->level_outer >= 0 && (r->level_outer != r->level_dihedral))
+      error->all(FLERR,"Dihedral style charmm must be set to same"
+                 " r-RESPA level as 'outer'");
+  }
+
   // insure use of CHARMM pair_style if any weight factors are non-zero
   // set local ptrs to LJ 14 arrays setup by Pair
+  // also verify that the correct 1-4 scaling is set
 
   if (weightflag) {
+
+    if ((force->special_lj[3] != 0.0) || (force->special_coul[3] != 0.0))
+      error->all(FLERR,"Must use 'special_bonds charmm' with"
+                 " dihedral style charmm for use with CHARMM pair styles");
+
     int itmp;
     if (force->pair == NULL)
       error->all(FLERR,"Dihedral charmm is incompatible with Pair style");

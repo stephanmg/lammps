@@ -403,7 +403,7 @@ void PairBrownian::settings(int narg, char **arg)
 
   if (allocated) {
     for (int i = 1; i <= atom->ntypes; i++)
-      for (int j = i+1; j <= atom->ntypes; j++)
+      for (int j = i; j <= atom->ntypes; j++)
         if (setflag[i][j]) {
           cut_inner[i][j] = cut_inner_global;
           cut[i][j] = cut_global;
@@ -423,8 +423,8 @@ void PairBrownian::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(arg[1],atom->ntypes,jlo,jhi);
+  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
+  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
 
   double cut_inner_one = cut_inner_global;
   double cut_one = cut_global;

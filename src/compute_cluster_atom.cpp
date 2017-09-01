@@ -34,7 +34,8 @@ using namespace LAMMPS_NS;
 /* ---------------------------------------------------------------------- */
 
 ComputeClusterAtom::ComputeClusterAtom(LAMMPS *lmp, int narg, char **arg) :
-  Compute(lmp, narg, arg)
+  Compute(lmp, narg, arg),
+  clusterID(NULL)
 {
   if (narg != 4) error->all(FLERR,"Illegal compute cluster/atom command");
 
@@ -46,7 +47,6 @@ ComputeClusterAtom::ComputeClusterAtom(LAMMPS *lmp, int narg, char **arg) :
   comm_forward = 1;
 
   nmax = 0;
-  clusterID = NULL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -63,7 +63,7 @@ void ComputeClusterAtom::init()
   if (atom->tag_enable == 0)
     error->all(FLERR,"Cannot use compute cluster/atom unless atoms have IDs");
   if (force->pair == NULL)
-    error->all(FLERR,"Compute cluster/atom requires a pair style be defined");
+    error->all(FLERR,"Compute cluster/atom requires a pair style to be defined");
   if (sqrt(cutsq) > force->pair->cutforce)
     error->all(FLERR,
                "Compute cluster/atom cutoff is longer than pairwise cutoff");
@@ -104,7 +104,7 @@ void ComputeClusterAtom::compute_peratom()
 
   // grow clusterID array if necessary
 
-  if (atom->nlocal+atom->nghost > nmax) {
+  if (atom->nmax > nmax) {
     memory->destroy(clusterID);
     nmax = atom->nmax;
     memory->create(clusterID,nmax,"cluster/atom:clusterID");

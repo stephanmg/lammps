@@ -55,7 +55,7 @@ void FixNHSphereOMP::init()
   for (int i = 0; i < nlocal; i++)
     if (mask[i] & groupbit)
       if (radius[i] == 0.0)
-        error->one(FLERR,"Fix nvt/sphere requires extended particles");
+        error->one(FLERR,"Fix nvt/npt/nph/sphere/omp require extended particles");
 
   FixNHOMP::init();
 }
@@ -97,6 +97,7 @@ void FixNHSphereOMP::nve_v()
       v[i].x += dtfm*f[i].x;
       v[i].y += dtfm*f[i].y;
       v[i].z += dtfm*f[i].z;
+
       const double dtirotate = dtfrotate / (radius[i]*radius[i]*rmass[i]);
       omega[i].x += dtirotate*torque[i].x;
       omega[i].y += dtirotate*torque[i].y;
@@ -138,11 +139,11 @@ void FixNHSphereOMP::nh_v_temp()
     for (i = 0; i < nlocal; i++) {
       double buf[3];
       if (mask[i] & groupbit) {
-        temperature->remove_bias(i,&v[i].x);
+        temperature->remove_bias_thr(i,&v[i].x,buf);
         v[i].x *= factor_eta;
         v[i].y *= factor_eta;
         v[i].z *= factor_eta;
-        temperature->restore_bias(i,&v[i].x);
+        temperature->restore_bias_thr(i,&v[i].x,buf);
         omega[i].x *= factor_eta;
         omega[i].y *= factor_eta;
         omega[i].z *= factor_eta;

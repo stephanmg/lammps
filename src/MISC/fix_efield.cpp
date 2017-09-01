@@ -41,7 +41,8 @@ enum{NONE,CONSTANT,EQUAL,ATOM};
 /* ---------------------------------------------------------------------- */
 
 FixEfield::FixEfield(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg), xstr(NULL), ystr(NULL), zstr(NULL),
+  estr(NULL), idregion(NULL), efield(NULL)
 {
   if (narg < 6) error->all(FLERR,"Illegal fix efield command");
 
@@ -52,6 +53,8 @@ FixEfield::FixEfield(LAMMPS *lmp, int narg, char **arg) :
   global_freq = 1;
   extvector = 1;
   extscalar = 1;
+  respa_level_support = 1;
+  ilevel_respa = 0;
 
   qe2f = force->qe2f;
   xstr = ystr = zstr = NULL;
@@ -216,8 +219,10 @@ void FixEfield::init()
       update->whichflag == 2 && estyle == NONE)
     error->all(FLERR,"Must use variable energy with fix efield");
 
-  if (strstr(update->integrate_style,"respa"))
-    nlevels_respa = ((Respa *) update->integrate)->nlevels;
+  if (strstr(update->integrate_style,"respa")) {
+    ilevel_respa = ((Respa *) update->integrate)->nlevels-1;
+    if (respa_level >= 0) ilevel_respa = MIN(respa_level,ilevel_respa);
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -227,9 +232,9 @@ void FixEfield::setup(int vflag)
   if (strstr(update->integrate_style,"verlet"))
     post_force(vflag);
   else {
-    ((Respa *) update->integrate)->copy_flevel_f(nlevels_respa-1);
-    post_force_respa(vflag,nlevels_respa-1,0);
-    ((Respa *) update->integrate)->copy_f_flevel(nlevels_respa-1);
+    ((Respa *) update->integrate)->copy_flevel_f(ilevel_respa);
+    post_force_respa(vflag,ilevel_respa,0);
+    ((Respa *) update->integrate)->copy_f_flevel(ilevel_respa);
   }
 }
 
@@ -254,7 +259,7 @@ void FixEfield::post_force(int vflag)
 
   // reallocate efield array if necessary
 
-  if (varflag == ATOM && nlocal > maxatom) {
+  if (varflag == ATOM && atom->nmax > maxatom) {
     maxatom = atom->nmax;
     memory->destroy(efield);
     memory->create(efield,maxatom,4,"efield:efield");
@@ -333,13 +338,13 @@ void FixEfield::post_force(int vflag)
 
     if (xstyle == EQUAL) ex = qe2f * input->variable->compute_equal(xvar);
     else if (xstyle == ATOM)
-      input->variable->compute_atom(xvar,igroup,&efield[0][0],3,0);
+      input->variable->compute_atom(xvar,igroup,&efield[0][0],4,0);
     if (ystyle == EQUAL) ey = qe2f * input->variable->compute_equal(yvar);
     else if (ystyle == ATOM)
-      input->variable->compute_atom(yvar,igroup,&efield[0][1],3,0);
+      input->variable->compute_atom(yvar,igroup,&efield[0][1],4,0);
     if (zstyle == EQUAL) ez = qe2f * input->variable->compute_equal(zvar);
     else if (zstyle == ATOM)
-      input->variable->compute_atom(zvar,igroup,&efield[0][2],3,0);
+      input->variable->compute_atom(zvar,igroup,&efield[0][2],4,0);
     if (estyle == ATOM)
       input->variable->compute_atom(evar,igroup,&efield[0][3],4,0);
 
@@ -393,7 +398,7 @@ void FixEfield::post_force(int vflag)
 
 void FixEfield::post_force_respa(int vflag, int ilevel, int iloop)
 {
-  if (ilevel == nlevels_respa-1) post_force(vflag);
+  if (ilevel == ilevel_respa) post_force(vflag);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -80,6 +80,7 @@ class Comm : protected Pointers {
   virtual void reverse_comm_pair(class Pair *) = 0;
   virtual void forward_comm_fix(class Fix *, int size=0) = 0;
   virtual void reverse_comm_fix(class Fix *, int size=0) = 0;
+  virtual void reverse_comm_fix_variable(class Fix *) = 0;
   virtual void forward_comm_compute(class Compute *) = 0;
   virtual void reverse_comm_compute(class Compute *) = 0;
   virtual void forward_comm_dump(class Dump *) = 0;
@@ -104,8 +105,8 @@ class Comm : protected Pointers {
 
   // non-virtual functions common to all Comm styles
 
-  void ring(int, int, void *, int, void (*)(int, char *),
-            void *, int self = 1);
+  void ring(int, int, void *, int, void (*)(int, char *, void *),
+            void *, void *, int self = 1);
   int read_lines_from_file(FILE *, int, int, char *);
   int read_lines_from_file_universe(FILE *, int, int, char *);
 

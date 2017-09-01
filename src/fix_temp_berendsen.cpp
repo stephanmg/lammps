@@ -35,7 +35,8 @@ enum{CONSTANT,EQUAL};
 /* ---------------------------------------------------------------------- */
 
 FixTempBerendsen::FixTempBerendsen(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg),
+  tstr(NULL), id_temp(NULL), tflag(0)
 {
   if (narg != 6) error->all(FLERR,"Illegal fix temp/berendsen command");
 
@@ -126,6 +127,9 @@ void FixTempBerendsen::init()
   if (icompute < 0)
     error->all(FLERR,"Temperature ID for fix temp/berendsen does not exist");
   temperature = modify->compute[icompute];
+
+  if (modify->check_rigid_group_overlap(groupbit))
+    error->warning(FLERR,"Cannot thermostat atoms in rigid bodies");
 
   if (temperature->tempbias) which = BIAS;
   else which = NOBIAS;

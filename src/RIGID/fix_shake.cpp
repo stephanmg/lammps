@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "fix_shake.h"
+#include "fix_rattle.h"
 #include "atom.h"
 #include "atom_vec.h"
 #include "molecule.h"
@@ -38,17 +39,22 @@ using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
 
-// allocate space for static class variable
-
-FixShake *FixShake::fsptr;
-
 #define BIG 1.0e20
 #define MASSDELTA 0.1
 
 /* ---------------------------------------------------------------------- */
 
 FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg), bond_flag(NULL), angle_flag(NULL), 
+  type_flag(NULL), mass_list(NULL), bond_distance(NULL), angle_distance(NULL), 
+  loop_respa(NULL), step_respa(NULL), x(NULL), v(NULL), f(NULL), ftmp(NULL), 
+  vtmp(NULL), mass(NULL), rmass(NULL), type(NULL), shake_flag(NULL), 
+  shake_atom(NULL), shake_type(NULL), xshake(NULL), nshake(NULL), 
+  list(NULL), b_count(NULL), b_count_all(NULL), b_ave(NULL), b_max(NULL), 
+  b_min(NULL), b_ave_all(NULL), b_max_all(NULL), b_min_all(NULL), 
+  a_count(NULL), a_count_all(NULL), a_ave(NULL), a_max(NULL), a_min(NULL), 
+  a_ave_all(NULL), a_max_all(NULL), a_min_all(NULL), atommols(NULL), 
+  onemols(NULL)
 {
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -70,6 +76,9 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
   shake_atom = NULL;
   shake_type = NULL;
   xshake = NULL;
+
+  ftmp = NULL; 
+  vtmp = NULL;
 
   grow_arrays(atom->nmax);
   atom->add_callback(0);
@@ -109,7 +118,7 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
     else if (strcmp(arg[next],"t") == 0) mode = 't';
     else if (strcmp(arg[next],"m") == 0) {
       mode = 'm';
-      atom->check_mass();
+      atom->check_mass(FLERR);
 
     // break if keyword that is not b,a,t,m
 
@@ -206,7 +215,6 @@ FixShake::FixShake(LAMMPS *lmp, int narg, char **arg) :
   // SHAKE vs RATTLE
 
   rattle = 0;
-  vflag_post_force = 0;
 
   // identify all SHAKE clusters
 
@@ -255,6 +263,9 @@ FixShake::~FixShake()
   memory->destroy(shake_atom);
   memory->destroy(shake_type);
   memory->destroy(xshake);
+  memory->destroy(ftmp);
+  memory->destroy(vtmp);
+
 
   delete [] bond_flag;
   delete [] angle_flag;
@@ -433,30 +444,34 @@ void FixShake::setup(int vflag)
       next_output = (ntimestep/output_every)*output_every + output_every;
   } else next_output = -1;
 
-  // half timestep constraint on pre-step, full timestep thereafter
+  // set respa to 0 if verlet is used and to 1 otherwise
 
-  if (strstr(update->integrate_style,"verlet")) {
-    respa   = 0;
+  if (strstr(update->integrate_style,"verlet")) 
+    respa = 0;
+  else
+    respa = 1;
+
+  if (!respa) {
     dtv     = update->dt;
     dtfsq   = 0.5 * update->dt * update->dt * force->ftm2v;
-    FixShake::post_force(vflag);
     if (!rattle) dtfsq = update->dt * update->dt * force->ftm2v;
-
   } else {
-    respa  = 1;
     dtv = step_respa[0];
     dtf_innerhalf = 0.5 * step_respa[0] * force->ftm2v;
     dtf_inner = dtf_innerhalf;
-
-    // apply correction to all rRESPA levels
-
-    for (int ilevel = 0; ilevel < nlevels_respa; ilevel++) {
-      ((Respa *) update->integrate)->copy_flevel_f(ilevel);
-      FixShake::post_force_respa(vflag,ilevel,loop_respa[ilevel]-1);
-      ((Respa *) update->integrate)->copy_f_flevel(ilevel);
-    }
-    if (!rattle) dtf_inner = step_respa[0] * force->ftm2v;
   }
+
+  // correct geometry of cluster if necessary
+
+  correct_coordinates(vflag);
+
+  // remove velocities along any bonds
+
+  correct_velocities();
+
+  // precalculate constraining forces for first integration step
+
+  shake_end_of_step(vflag);
 }
 
 /* ----------------------------------------------------------------------
@@ -499,7 +514,7 @@ void FixShake::pre_neighbor()
         atom2 = atom->map(shake_atom[i][1]);
         if (atom1 == -1 || atom2 == -1) {
           char str[128];
-          sprintf(str,"Shake atoms " TAGINT_FORMAT " " TAGINT_FORMAT
+          sprintf(str,"Shake atoms " TAGINT_FORMAT " " TAGINT_FORMAT 
                   " missing on proc %d at step " BIGINT_FORMAT,
                   shake_atom[i][0],shake_atom[i][1],me,update->ntimestep);
           error->one(FLERR,str);
@@ -511,7 +526,7 @@ void FixShake::pre_neighbor()
         atom3 = atom->map(shake_atom[i][2]);
         if (atom1 == -1 || atom2 == -1 || atom3 == -1) {
           char str[128];
-          sprintf(str,"Shake atoms "
+          sprintf(str,"Shake atoms " 
                   TAGINT_FORMAT " " TAGINT_FORMAT " " TAGINT_FORMAT
                   " missing on proc %d at step " BIGINT_FORMAT,
                   shake_atom[i][0],shake_atom[i][1],shake_atom[i][2],
@@ -526,8 +541,8 @@ void FixShake::pre_neighbor()
         atom4 = atom->map(shake_atom[i][3]);
         if (atom1 == -1 || atom2 == -1 || atom3 == -1 || atom4 == -1) {
           char str[128];
-          sprintf(str,"Shake atoms "
-                  TAGINT_FORMAT " " TAGINT_FORMAT " "
+          sprintf(str,"Shake atoms " 
+                  TAGINT_FORMAT " " TAGINT_FORMAT " " 
                   TAGINT_FORMAT " " TAGINT_FORMAT
                   " missing on proc %d at step " BIGINT_FORMAT,
                   shake_atom[i][0],shake_atom[i][1],
@@ -570,7 +585,7 @@ void FixShake::post_force(int vflag)
     else if (shake_flag[m] == 4) shake4(m);
     else shake3angle(m);
   }
-
+  
   // store vflag for coordinate_constraints_end_of_step()
 
   vflag_post_force = vflag;
@@ -620,7 +635,6 @@ void FixShake::post_force_respa(int vflag, int ilevel, int iloop)
   }
 
   // store vflag for coordinate_constraints_end_of_step()
-
   vflag_post_force = vflag;
 }
 
@@ -670,7 +684,7 @@ void FixShake::find_clusters()
   tagint tagprev;
   double massone;
   tagint *buf;
-
+  
   if (me == 0 && screen) {
     if (!rattle) fprintf(screen,"Finding SHAKE clusters ...\n");
     else fprintf(screen,"Finding RATTLE clusters ...\n");
@@ -685,7 +699,7 @@ void FixShake::find_clusters()
   double *rmass = atom->rmass;
   int **nspecial = atom->nspecial;
   tagint **special = atom->special;
-
+  
   int *molindex = atom->molindex;
   int *molatom = atom->molatom;
 
@@ -826,8 +840,7 @@ void FixShake::find_clusters()
 
   // cycle buffer around ring of procs back to self
 
-  fsptr = this;
-  comm->ring(size,sizeof(tagint),buf,1,ring_bonds,buf);
+  comm->ring(size,sizeof(tagint),buf,1,ring_bonds,buf,(void *)this);
 
   // store partner info returned to me
 
@@ -952,11 +965,10 @@ void FixShake::find_clusters()
 
   // cycle buffer around ring of procs back to self
 
-  fsptr = this;
-  comm->ring(size,sizeof(tagint),buf,2,ring_nshake,buf);
+  comm->ring(size,sizeof(tagint),buf,2,ring_nshake,buf,(void *)this);
 
   // store partner info returned to me
-
+  
   m = 0;
   while (m < size) {
     i = atom->map(buf[m]);
@@ -1105,8 +1117,7 @@ void FixShake::find_clusters()
 
   // cycle buffer around ring of procs back to self
 
-  fsptr = this;
-  comm->ring(size,sizeof(tagint),buf,3,ring_shake,NULL);
+  comm->ring(size,sizeof(tagint),buf,3,ring_shake,NULL,(void *)this);
 
   memory->destroy(buf);
 
@@ -1193,8 +1204,9 @@ void FixShake::find_clusters()
      search for bond with 1st atom and fill in bondtype
 ------------------------------------------------------------------------- */
 
-void FixShake::ring_bonds(int ndatum, char *cbuf)
+void FixShake::ring_bonds(int ndatum, char *cbuf, void *ptr)
 {
+  FixShake *fsptr = (FixShake *)ptr;
   Atom *atom = fsptr->atom;
   double *rmass = atom->rmass;
   double *mass = atom->mass;
@@ -1230,8 +1242,9 @@ void FixShake::ring_bonds(int ndatum, char *cbuf)
    if I own partner, fill in nshake value
 ------------------------------------------------------------------------- */
 
-void FixShake::ring_nshake(int ndatum, char *cbuf)
+void FixShake::ring_nshake(int ndatum, char *cbuf, void *ptr)
 {
+  FixShake *fsptr = (FixShake *)ptr;
   Atom *atom = fsptr->atom;
   int nlocal = atom->nlocal;
 
@@ -1251,8 +1264,9 @@ void FixShake::ring_nshake(int ndatum, char *cbuf)
    if I own partner, fill in nshake value
 ------------------------------------------------------------------------- */
 
-void FixShake::ring_shake(int ndatum, char *cbuf)
+void FixShake::ring_shake(int ndatum, char *cbuf, void *ptr)
 {
+  FixShake *fsptr = (FixShake *)ptr;
   Atom *atom = fsptr->atom;
   int nlocal = atom->nlocal;
 
@@ -1401,12 +1415,14 @@ void FixShake::shake(int m)
   domain->minimum_image(r01);
 
   // s01 = distance vec after unconstrained update, with PBC
+  // use Domain::minimum_image_once(), not minimum_image()
+  // b/c xshake values might be huge, due to e.g. fix gcmc
 
   double s01[3];
   s01[0] = xshake[i0][0] - xshake[i1][0];
   s01[1] = xshake[i0][1] - xshake[i1][1];
   s01[2] = xshake[i0][2] - xshake[i1][2];
-  domain->minimum_image(s01);
+  domain->minimum_image_once(s01);
 
   // scalar distances between atoms
 
@@ -1508,18 +1524,20 @@ void FixShake::shake3(int m)
   domain->minimum_image(r02);
 
   // s01,s02 = distance vec after unconstrained update, with PBC
+  // use Domain::minimum_image_once(), not minimum_image()
+  // b/c xshake values might be huge, due to e.g. fix gcmc
 
   double s01[3];
   s01[0] = xshake[i0][0] - xshake[i1][0];
   s01[1] = xshake[i0][1] - xshake[i1][1];
   s01[2] = xshake[i0][2] - xshake[i1][2];
-  domain->minimum_image(s01);
+  domain->minimum_image_once(s01);
 
   double s02[3];
   s02[0] = xshake[i0][0] - xshake[i2][0];
   s02[1] = xshake[i0][1] - xshake[i2][1];
   s02[2] = xshake[i0][2] - xshake[i2][2];
-  domain->minimum_image(s02);
+  domain->minimum_image_once(s02);
 
   // scalar distances between atoms
 
@@ -1599,6 +1617,12 @@ void FixShake::shake3(int m)
 
     lamda01 = lamda01_new;
     lamda02 = lamda02_new;
+
+    // stop iterations before we have a floating point overflow
+    // max double is < 1.0e308, so 1e150 is a reasonable cutoff
+
+    if (fabs(lamda01) > 1e150 || fabs(lamda02) > 1e150) done = 1;
+
     niter++;
   }
 
@@ -1681,24 +1705,26 @@ void FixShake::shake4(int m)
   domain->minimum_image(r03);
 
   // s01,s02,s03 = distance vec after unconstrained update, with PBC
+  // use Domain::minimum_image_once(), not minimum_image()
+  // b/c xshake values might be huge, due to e.g. fix gcmc
 
   double s01[3];
   s01[0] = xshake[i0][0] - xshake[i1][0];
   s01[1] = xshake[i0][1] - xshake[i1][1];
   s01[2] = xshake[i0][2] - xshake[i1][2];
-  domain->minimum_image(s01);
+  domain->minimum_image_once(s01);
 
   double s02[3];
   s02[0] = xshake[i0][0] - xshake[i2][0];
   s02[1] = xshake[i0][1] - xshake[i2][1];
   s02[2] = xshake[i0][2] - xshake[i2][2];
-  domain->minimum_image(s02);
+  domain->minimum_image_once(s02);
 
   double s03[3];
   s03[0] = xshake[i0][0] - xshake[i3][0];
   s03[1] = xshake[i0][1] - xshake[i3][1];
   s03[2] = xshake[i0][2] - xshake[i3][2];
-  domain->minimum_image(s03);
+  domain->minimum_image_once(s03);
 
   // scalar distances between atoms
 
@@ -1834,6 +1860,13 @@ void FixShake::shake4(int m)
     lamda01 = lamda01_new;
     lamda02 = lamda02_new;
     lamda03 = lamda03_new;
+
+    // stop iterations before we have a floating point overflow
+    // max double is < 1.0e308, so 1e150 is a reasonable cutoff
+
+    if (fabs(lamda01) > 1e150 || fabs(lamda02) > 1e150
+        || fabs(lamda03) > 1e150) done = 1;
+
     niter++;
   }
 
@@ -1923,24 +1956,26 @@ void FixShake::shake3angle(int m)
   domain->minimum_image(r12);
 
   // s01,s02,s12 = distance vec after unconstrained update, with PBC
+  // use Domain::minimum_image_once(), not minimum_image()
+  // b/c xshake values might be huge, due to e.g. fix gcmc
 
   double s01[3];
   s01[0] = xshake[i0][0] - xshake[i1][0];
   s01[1] = xshake[i0][1] - xshake[i1][1];
   s01[2] = xshake[i0][2] - xshake[i1][2];
-  domain->minimum_image(s01);
+  domain->minimum_image_once(s01);
 
   double s02[3];
   s02[0] = xshake[i0][0] - xshake[i2][0];
   s02[1] = xshake[i0][1] - xshake[i2][1];
   s02[2] = xshake[i0][2] - xshake[i2][2];
-  domain->minimum_image(s02);
+  domain->minimum_image_once(s02);
 
   double s12[3];
   s12[0] = xshake[i1][0] - xshake[i2][0];
   s12[1] = xshake[i1][1] - xshake[i2][1];
   s12[2] = xshake[i1][2] - xshake[i2][2];
-  domain->minimum_image(s12);
+  domain->minimum_image_once(s12);
 
   // scalar distances between atoms
 
@@ -2037,6 +2072,7 @@ void FixShake::shake3angle(int m)
   double quad1,quad2,quad3,b1,b2,b3,lamda01_new,lamda02_new,lamda12_new;
 
   while (!done && niter < max_iter) {
+
     quad1 = quad1_0101 * lamda01*lamda01 +
       quad1_0202 * lamda02*lamda02 +
       quad1_1212 * lamda12*lamda12 +
@@ -2074,6 +2110,13 @@ void FixShake::shake3angle(int m)
     lamda01 = lamda01_new;
     lamda02 = lamda02_new;
     lamda12 = lamda12_new;
+
+    // stop iterations before we have a floating point overflow
+    // max double is < 1.0e308, so 1e150 is a reasonable cutoff
+
+    if (fabs(lamda01) > 1e150 || fabs(lamda02) > 1e150
+        || fabs(lamda12) > 1e150) done = 1;
+
     niter++;
   }
 
@@ -2289,7 +2332,7 @@ int FixShake::bondtype_findset(int i, tagint n1, tagint n2, int setflag)
     tagint *batom = atommols[imol]->bond_atom[iatom];
     btype = atommols[imol]->bond_type[iatom];
     nbonds = atommols[imol]->num_bond[iatom];
-
+    
     for (m = 0; m < nbonds; m++) {
       if (n1 == tag[i] && n2 == batom[m]+tagprev) break;
       if (n1 == batom[m]+tagprev && n2 == tag[i]) break;
@@ -2346,7 +2389,7 @@ int FixShake::angletype_findset(int i, tagint n1, tagint n2, int setflag)
     tagint *aatom3 = atommols[imol]->angle_atom3[iatom];
     atype = atommols[imol]->angle_type[iatom];
     nangles = atommols[imol]->num_angle[iatom];
-
+    
     for (m = 0; m < nangles; m++) {
       if (n1 == aatom1[m]+tagprev && n2 == aatom3[m]+tagprev) break;
       if (n1 == aatom3[m]+tagprev && n2 == aatom1[m]+tagprev) break;
@@ -2397,6 +2440,10 @@ void FixShake::grow_arrays(int nmax)
   memory->grow(shake_type,nmax,3,"shake:shake_type");
   memory->destroy(xshake);
   memory->create(xshake,nmax,3,"shake:xshake");
+  memory->destroy(ftmp);
+  memory->create(ftmp,nmax,3,"shake:ftmp");
+  memory->destroy(vtmp);
+  memory->create(vtmp,nmax,3,"shake:vtmp");
 }
 
 /* ----------------------------------------------------------------------
@@ -2456,7 +2503,7 @@ void FixShake::update_arrays(int i, int atom_offset)
     shake_atom[i][0] += atom_offset;
     shake_atom[i][1] += atom_offset;
     shake_atom[i][2] += atom_offset;
-  } else if (flag == 2) {
+  } else if (flag == 2) { 
     shake_atom[i][0] += atom_offset;
     shake_atom[i][1] += atom_offset;
   } else if (flag == 3) {
@@ -2602,7 +2649,7 @@ int FixShake::unpack_exchange(int nlocal, double *buf)
 
 /* ---------------------------------------------------------------------- */
 
-int FixShake::pack_forward_comm(int n, int *list, double *buf,
+int FixShake::pack_forward_comm(int n, int *list, double *buf, 
                                 int pbc_flag, int *pbc)
 {
   int i,j,m;
@@ -2674,34 +2721,116 @@ void FixShake::reset_dt()
 void *FixShake::extract(const char *str, int &dim)
 {
   dim = 0;
-  if (strcmp(str,"onemol") == 0) {
-    return onemols;
-  }
+  if (strcmp(str,"onemol") == 0) return onemols;
   return NULL;
 }
 
-
-
 /* ----------------------------------------------------------------------
-   wrapper method for end_of_step fixes which modify the coordinates
+   add coordinate constraining forces
+   this method is called at the end of a timestep
 ------------------------------------------------------------------------- */
 
-void FixShake::coordinate_constraints_end_of_step() {
+void FixShake::shake_end_of_step(int vflag) {
+
   if (!respa) {
+    dtv     = update->dt;
     dtfsq   = 0.5 * update->dt * update->dt * force->ftm2v;
-    FixShake::post_force(vflag_post_force);
+    FixShake::post_force(vflag);
     if (!rattle) dtfsq = update->dt * update->dt * force->ftm2v;
-  }
-  else {
+
+  } else {
+    dtv = step_respa[0];
     dtf_innerhalf = 0.5 * step_respa[0] * force->ftm2v;
     dtf_inner = dtf_innerhalf;
+
     // apply correction to all rRESPA levels
+
     for (int ilevel = 0; ilevel < nlevels_respa; ilevel++) {
       ((Respa *) update->integrate)->copy_flevel_f(ilevel);
-      FixShake::post_force_respa(vflag_post_force,ilevel,loop_respa[ilevel]-1);
+      FixShake::post_force_respa(vflag,ilevel,loop_respa[ilevel]-1);
       ((Respa *) update->integrate)->copy_f_flevel(ilevel);
     }
     if (!rattle) dtf_inner = step_respa[0] * force->ftm2v;
   }
 }
 
+/* ----------------------------------------------------------------------
+   wrapper method for end_of_step fixes which modify velocities
+------------------------------------------------------------------------- */
+
+void FixShake::correct_velocities() {}
+
+/* ----------------------------------------------------------------------
+   calculate constraining forces based on the current configuration
+   change coordinates
+------------------------------------------------------------------------- */
+
+void FixShake::correct_coordinates(int vflag) { 
+   
+  // save current forces and velocities so that you 
+  // initialise them to zero such that FixShake::unconstrained_coordinate_update has no effect 
+
+  for (int j=0; j<nlocal; j++) {
+    for (int k=0; k<3; k++) {
+
+      // store current value of forces and velocities
+
+      ftmp[j][k] = f[j][k];
+      vtmp[j][k] = v[j][k];
+
+      // set f and v to zero for SHAKE
+
+      v[j][k] = 0;
+      f[j][k] = 0;
+    }
+  }
+
+  // call SHAKE to correct the coordinates which were updated without constraints
+  // IMPORTANT: use 1 as argument and thereby enforce velocity Verlet
+
+  dtfsq   = 0.5 * update->dt * update->dt * force->ftm2v;
+  FixShake::post_force(vflag);
+
+  // integrate coordiantes: x' = xnp1 + dt^2/2m_i * f, where f is the constraining force
+  // NOTE: After this command, the coordinates geometry of the molecules will be correct! 
+
+  double dtfmsq; 
+  if (rmass) {  
+    for (int i = 0; i < nlocal; i++) {  
+      dtfmsq = dtfsq/ rmass[i];  
+      x[i][0] = x[i][0] + dtfmsq*f[i][0];  
+      x[i][1] = x[i][1] + dtfmsq*f[i][1];  
+      x[i][2] = x[i][2] + dtfmsq*f[i][2];  
+    }  
+  }  
+  else {  
+    for (int i = 0; i < nlocal; i++) {  
+      dtfmsq = dtfsq / mass[type[i]];  
+      x[i][0] = x[i][0] + dtfmsq*f[i][0];  
+      x[i][1] = x[i][1] + dtfmsq*f[i][1];  
+      x[i][2] = x[i][2] + dtfmsq*f[i][2];  
+    }  
+  }
+
+  // copy forces and velocities back
+
+  for (int j=0; j<nlocal; j++) {
+    for (int k=0; k<3; k++) {
+      f[j][k] = ftmp[j][k];
+      v[j][k] = vtmp[j][k];
+    }
+  }
+
+  if (!rattle) dtfsq = update->dt * update->dt * force->ftm2v;
+
+  // communicate changes
+  // NOTE: for compatibility xshake is temporarily set to x, such that pack/unpack_forward 
+  //       can be used for communicating the coordinates. 
+
+  double **xtmp = xshake;
+  xshake = x;
+  if (nprocs > 1) {
+    comm->forward_comm_fix(this);
+  }
+  xshake = xtmp;
+}

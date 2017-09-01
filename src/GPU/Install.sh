@@ -3,6 +3,10 @@
 
 mode=$1
 
+# enforce using portable C locale
+LC_ALL=C
+export LC_ALL
+
 # arg1 = file, arg2 = file it depends on
 
 action () {
@@ -109,10 +113,16 @@ action pair_soft_gpu.cpp
 action pair_soft_gpu.h
 action pair_sw_gpu.cpp pair_sw.cpp
 action pair_sw_gpu.h pair_sw.h
+action pair_vashishta_gpu.cpp pair_vashishta.cpp
+action pair_vashishta_gpu.h pair_vashishta.h
 action pair_table_gpu.cpp pair_table.cpp
 action pair_table_gpu.h pair_table.cpp
 action pair_tersoff_gpu.cpp pair_tersoff.cpp
 action pair_tersoff_gpu.h pair_tersoff.cpp
+action pair_tersoff_mod_gpu.cpp pair_tersoff_mod.cpp
+action pair_tersoff_mod_gpu.h pair_tersoff_mod.cpp
+action pair_tersoff_zbl_gpu.cpp pair_tersoff_zbl.cpp
+action pair_tersoff_zbl_gpu.h pair_tersoff_zbl.cpp
 action pair_yukawa_colloid_gpu.cpp pair_yukawa_colloid.cpp
 action pair_yukawa_colloid_gpu.h pair_yukawa_colloid.cpp
 action pair_yukawa_gpu.cpp pair_yukawa.cpp

@@ -41,6 +41,9 @@ ComputeTempPartial::ComputeTempPartial(LAMMPS *lmp, int narg, char **arg) :
   xflag = force->inumeric(FLERR,arg[3]);
   yflag = force->inumeric(FLERR,arg[4]);
   zflag = force->inumeric(FLERR,arg[5]);
+  if ((xflag != 0 && xflag != 1) || (yflag != 0 && yflag != 1)
+      || (zflag != 0 && zflag != 1))
+    error->all(FLERR,"Illegal compute temp/partial command");
   if (zflag && domain->dimension == 2)
     error->all(FLERR,"Compute temp/partial cannot use vz for 2d systemx");
 
@@ -77,7 +80,10 @@ void ComputeTempPartial::dof_compute()
   natoms_temp = group->count(igroup);
   int nper = xflag+yflag+zflag;
   dof = nper * natoms_temp;
-  dof -= (1.0*nper/domain->dimension)*fix_dof + extra_dof;
+
+  // distribute extra dofs evenly across active dimensions
+
+  dof -= (1.0*nper/domain->dimension)*(fix_dof + extra_dof);
   if (dof > 0) tfactor = force->mvv2e / (dof * force->boltz);
   else tfactor = 0.0;
 }
@@ -180,6 +186,26 @@ void ComputeTempPartial::remove_bias(int i, double *v)
 }
 
 /* ----------------------------------------------------------------------
+   remove velocity bias from atom I to leave thermal velocity
+------------------------------------------------------------------------- */
+
+void ComputeTempPartial::remove_bias_thr(int i, double *v, double *b)
+{
+  if (!xflag) {
+    b[0] = v[0];
+    v[0] = 0.0;
+  }
+  if (!yflag) {
+    b[1] = v[1];
+    v[1] = 0.0;
+  }
+  if (!zflag) {
+    b[2] = v[2];
+    v[2] = 0.0;
+  }
+}
+
+/* ----------------------------------------------------------------------
    remove velocity bias from all atoms to leave thermal velocity
 ------------------------------------------------------------------------- */
 
@@ -189,7 +215,7 @@ void ComputeTempPartial::remove_bias_all()
   int *mask = atom->mask;
   int nlocal = atom->nlocal;
 
-  if (nlocal > maxbias) {
+  if (atom->nmax > maxbias) {
     memory->destroy(vbiasall);
     maxbias = atom->nmax;
     memory->create(vbiasall,maxbias,3,"temp/partial:vbiasall");
@@ -254,6 +280,18 @@ void ComputeTempPartial::restore_bias(int i, double *v)
   if (!xflag) v[0] += vbias[0];
   if (!yflag) v[1] += vbias[1];
   if (!zflag) v[2] += vbias[2];
+}
+
+/* ----------------------------------------------------------------------
+   add back in velocity bias to atom I removed by remove_bias_thr()
+   assume remove_bias_thr() was previously called with the same buffer b
+------------------------------------------------------------------------- */
+
+void ComputeTempPartial::restore_bias_thr(int i, double *v, double *b)
+{
+  if (!xflag) v[0] += b[0];
+  if (!yflag) v[1] += b[1];
+  if (!zflag) v[2] += b[2];
 }
 
 /* ----------------------------------------------------------------------

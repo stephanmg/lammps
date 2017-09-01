@@ -40,6 +40,7 @@ template<class DeviceType>
 FixWallReflectKokkos<DeviceType>::FixWallReflectKokkos(LAMMPS *lmp, int narg, char **arg) :
   FixWallReflect(lmp, narg, arg)
 {
+  kokkosable = 1;
   atomKK = (AtomKokkos *) atom;
   execution_space = ExecutionSpaceFromDevice<DeviceType>::space;
   datamask_read = X_MASK | V_MASK | MASK_MASK;
@@ -78,7 +79,6 @@ void FixWallReflectKokkos<DeviceType>::post_integrate()
 
     copymode = 1;
     Kokkos::parallel_for(Kokkos::RangePolicy<DeviceType, TagFixWallReflectPostIntegrate>(0,nlocal),*this);
-    DeviceType::fence();
     copymode = 0;
   }
 

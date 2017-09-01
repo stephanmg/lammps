@@ -186,7 +186,7 @@ ucl_inline numtyp ters_bij_d(const numtyp zeta,
   if (tmp > param_c2)
     return param_beta * ((numtyp)-0.5*ucl_powr(tmp,(numtyp)-1.5) *
     // error in negligible 2nd term fixed 9/30/2015
-		// (1.0 - 0.5*(1.0 +  1.0/(2.0*param->powern)) *
+                // (1.0 - 0.5*(1.0 +  1.0/(2.0*param->powern)) *
       ((numtyp)1.0 - ((numtyp)1.0 + (numtyp)1.0 /((numtyp)2.0 * param_powern)) *
        ucl_powr(tmp,-param_powern)));
   if (tmp < param_c4) return (numtyp)0.0;
@@ -227,7 +227,7 @@ ucl_inline void ters_zetaterm_d(const numtyp prefactor,
   if ((int)param_powermint == 3) tmp = t*t*t;
   else tmp = t;
 
-  if (tmp > (numtyp)69.0776) ex_delr = (acctyp)1.e30;
+  if (tmp > (numtyp)69.0776) ex_delr = (numtyp)1.e30;
   else if (tmp < (numtyp)-69.0776) ex_delr = (numtyp)0.0;
   else ex_delr = ucl_exp(tmp);
 
@@ -295,7 +295,7 @@ ucl_inline void ters_zetaterm_d_fi(const numtyp prefactor,
   if ((int)param_powermint == 3) tmp = t*t*t;
   else tmp = t;
 
-  if (tmp > (numtyp)69.0776) ex_delr = (acctyp)1.e30;
+  if (tmp > (numtyp)69.0776) ex_delr = (numtyp)1.e30;
   else if (tmp < (numtyp)-69.0776) ex_delr = (numtyp)0.0;
   else ex_delr = ucl_exp(tmp);
 
@@ -344,7 +344,7 @@ ucl_inline void ters_zetaterm_d_fj(const numtyp prefactor,
   if ((int)param_powermint == 3) tmp = t*t*t;
   else tmp = t;
 
-  if (tmp > (numtyp)69.0776) ex_delr = (acctyp)1.e30;
+  if (tmp > (numtyp)69.0776) ex_delr = (numtyp)1.e30;
   else if (tmp < (numtyp)-69.0776) ex_delr = (numtyp)0.0;
   else ex_delr = ucl_exp(tmp);
 
@@ -391,7 +391,7 @@ ucl_inline void ters_zetaterm_d_fk(const numtyp prefactor,
   if ((int)param_powermint == 3) tmp = t*t*t;
   else tmp = t;
 
-  if (tmp > (numtyp)69.0776) ex_delr = (acctyp)1.e30;
+  if (tmp > (numtyp)69.0776) ex_delr = (numtyp)1.e30;
   else if (tmp < (numtyp)-69.0776) ex_delr = (numtyp)0.0;
   else ex_delr = ucl_exp(tmp);
 

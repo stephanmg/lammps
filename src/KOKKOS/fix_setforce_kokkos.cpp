@@ -38,6 +38,7 @@ template<class DeviceType>
 FixSetForceKokkos<DeviceType>::FixSetForceKokkos(LAMMPS *lmp, int narg, char **arg) :
   FixSetForce(lmp, narg, arg)
 {
+  kokkosable = 1;
   atomKK = (AtomKokkos *) atom;
   execution_space = ExecutionSpaceFromDevice<DeviceType>::space;
   datamask_read = EMPTY_MASK;
@@ -88,13 +89,15 @@ void FixSetForceKokkos<DeviceType>::post_force(int vflag)
   if (iregion >= 0) {
     region = domain->regions[iregion];
     region->prematch();
-    d_match = DAT::t_int_1d("setforce:d_match",nlocal);
-    region->match_all_kokkos(groupbit,d_match);
+    DAT::tdual_int_1d k_match = DAT::tdual_int_1d("setforce:k_match",nlocal);
+    region->match_all_kokkos(groupbit,k_match);
+    k_match.template sync<DeviceType>();
+    d_match = k_match.template view<DeviceType>();
   }
 
   // reallocate sforce array if necessary
 
-  if (varflag == ATOM && nlocal > maxatom) {
+  if (varflag == ATOM && atom->nmax > maxatom) {
     maxatom = atom->nmax;
     memory->destroy_kokkos(k_sforce,sforce);
     memory->create_kokkos(k_sforce,sforce,maxatom,3,"setforce:sforce");
@@ -107,7 +110,6 @@ void FixSetForceKokkos<DeviceType>::post_force(int vflag)
   if (varflag == CONSTANT) {
     copymode = 1;
     Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType, TagFixSetForceConstant>(0,nlocal),*this,foriginal_kk);
-    DeviceType::fence();
     copymode = 0;
 
   // variable force, wrap with clear/add
@@ -137,7 +139,6 @@ void FixSetForceKokkos<DeviceType>::post_force(int vflag)
 
     copymode = 1;
     Kokkos::parallel_reduce(Kokkos::RangePolicy<DeviceType, TagFixSetForceNonConstant>(0,nlocal),*this,foriginal_kk);
-    DeviceType::fence();
     copymode = 0;
   }
 

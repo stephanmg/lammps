@@ -31,6 +31,7 @@ class PairHybrid : public Pair {
   friend class FixOMP;
   friend class Force;
   friend class Respa;
+  friend class Info;
  public:
   PairHybrid(class LAMMPS *);
   virtual ~PairHybrid();
@@ -54,6 +55,9 @@ class PairHybrid : public Pair {
 
   int check_ijtype(int, int, char *);
 
+  virtual void add_tally_callback(class Compute *);
+  virtual void del_tally_callback(class Compute *);
+
  protected:
   int nstyles;                  // # of sub-styles
   Pair **styles;                // list of Pair style classes
@@ -68,6 +72,7 @@ class PairHybrid : public Pair {
   int ***map;                   // list of sub-styles itype,jtype points to
   double **special_lj;          // list of per style LJ exclusion factors
   double **special_coul;        // list of per style Coulomb exclusion factors
+  int *compute_tally;           // list of on/off flags for tally computes
 
   void allocate();
   void flags();
@@ -76,8 +81,6 @@ class PairHybrid : public Pair {
   double *save_special();
   void set_special(int);
   void restore_special(double *);
-
-  virtual void modify_requests();
 };
 
 }

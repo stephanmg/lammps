@@ -1,15 +1,26 @@
-/// -*- c++ -*-
+// -*- c++ -*-
+
+// This file is part of the Collective Variables module (Colvars).
+// The original version of Colvars and its updates are located at:
+// https://github.com/colvars/colvars
+// Please update all Colvars source files before making any changes.
+// If you wish to distribute your changes, please submit them to the
+// Colvars repository at GitHub.
 
 #ifndef COLVARMODULE_H
 #define COLVARMODULE_H
 
-#ifndef COLVARS_VERSION
-#define COLVARS_VERSION "2016-02-28"
-#endif
+#include "colvars_version.h"
 
 #ifndef COLVARS_DEBUG
 #define COLVARS_DEBUG false
 #endif
+
+/*! \mainpage Main page
+This is the Developer's documentation for the Collective Variables Module.
+
+You can browse the class hierarchy or the list of source files.
+ */
 
 /// \file colvarmodule.h
 /// \brief Collective variables main module
@@ -20,19 +31,16 @@
 /// shared between all object instances) to be accessed from other
 /// objects.
 
-// Error codes
 #define COLVARS_OK 0
-#define COLVARS_ERROR   -1
-#define GENERAL_ERROR   -1  // TODO this can be simply merged with COLVARS_ERROR
-#define COLVARS_NOT_IMPLEMENTED (-1<<1)
-#define INPUT_ERROR     (-1<<2) // out of bounds or inconsistent input
-#define BUG_ERROR       (-1<<3) // Inconsistent state indicating bug
-#define FILE_ERROR      (-1<<4)
-#define MEMORY_ERROR    (-1<<5)
-#define FATAL_ERROR     (-1<<6) // Should be set, or not, together with other bits
-#define DELETE_COLVARS  (-1<<7) // Instruct the caller to delete cvm
-#define COLVARS_NO_SUCH_FRAME (-1<<8) // Cannot load the requested frame
-
+#define COLVARS_ERROR   1
+#define COLVARS_NOT_IMPLEMENTED (1<<1)
+#define INPUT_ERROR     (1<<2) // out of bounds or inconsistent input
+#define BUG_ERROR       (1<<3) // Inconsistent state indicating bug
+#define FILE_ERROR      (1<<4)
+#define MEMORY_ERROR    (1<<5)
+#define FATAL_ERROR     (1<<6) // Should be set, or not, together with other bits
+#define DELETE_COLVARS  (1<<7) // Instruct the caller to delete cvm
+#define COLVARS_NO_SUCH_FRAME (1<<8) // Cannot load the requested frame
 
 #include <iostream>
 #include <iomanip>
@@ -43,11 +51,6 @@
 #include <cmath>
 #include <vector>
 #include <list>
-
-#ifdef NAMD_VERSION
-// use Lustre-friendly wrapper to POSIX write()
-#include "fstream_namd.h"
-#endif
 
 class colvarparse;
 class colvar;
@@ -106,20 +109,23 @@ public:
 
   /// Module-wide error state
   /// see constants at the top of this file
+protected:
+
   static int errorCode;
-  static inline void set_error_bits(int code)
-  {
-    errorCode |= code;
-    errorCode |= COLVARS_ERROR;
-  }
+
+public:
+
+  static void set_error_bits(int code);
+
+  static bool get_error_bit(int code);
+
   static inline int get_error()
   {
     return errorCode;
   }
-  static inline void clear_error()
-  {
-    errorCode = 0;
-  }
+
+  static void clear_error();
+
 
   /// Current step number
   static long it;
@@ -148,15 +154,43 @@ public:
   /// dt)
   static real debug_gradients_step_size;
 
+private:
+
   /// Prefix for all output files for this run
-  static std::string output_prefix;
+  std::string cvm_output_prefix;
 
-  /// input restart file name (determined from input_prefix)
-  static std::string restart_in_name;
+public:
+  /// Accessor for the above
+  static inline std::string &output_prefix()
+  {
+    colvarmodule *cv = colvarmodule::main();
+    return cv->cvm_output_prefix;
+  }
 
+private:
 
   /// Array of collective variables
-  static std::vector<colvar *>     colvars;
+  std::vector<colvar *> colvars;
+
+  /// Array of collective variables
+  std::vector<colvar *> colvars_active;
+
+  /// Collective variables to be calculated on different threads;
+  /// colvars with multple items (e.g. multiple active CVCs) are duplicated
+  std::vector<colvar *> colvars_smp;
+  /// Indexes of the items to calculate for each colvar
+  std::vector<int> colvars_smp_items;
+
+  /// Array of named atom groups
+  std::vector<atom_group *> named_atom_groups;
+public:
+  /// Register a named atom group into named_atom_groups
+  inline void register_named_atom_group(atom_group * ag) {
+    named_atom_groups.push_back(ag);
+  }
+
+  /// Array of collective variables
+  std::vector<colvar *> *variables();
 
   /* TODO: implement named CVCs
   /// Array of named (reusable) collective variable components
@@ -167,20 +201,31 @@ public:
   }
   */
 
+  /// Collective variables with the active flag on
+  std::vector<colvar *> *variables_active();
+
+  /// Collective variables to be calculated on different threads;
+  /// colvars with multple items (e.g. multiple active CVCs) are duplicated
+  std::vector<colvar *> *variables_active_smp();
+
+  /// Indexes of the items to calculate for each colvar
+  std::vector<int> *variables_active_smp_items();
+
   /// Array of collective variable biases
-  static std::vector<colvarbias *> biases;
-  /// \brief Number of ABF biases initialized (in normal conditions
-  /// should be 1)
-  static size_t n_abf_biases;
-  /// \brief Number of metadynamics biases initialized (in normal
-  /// conditions should be 1)
-  static size_t n_meta_biases;
-  /// \brief Number of restraint biases initialized (no limit on the
-  /// number)
-  static size_t n_rest_biases;
-  /// \brief Number of histograms initialized (no limit on the
-  /// number)
-  static size_t n_histo_biases;
+  std::vector<colvarbias *> biases;
+
+  /// Energy of built-in and scripted biases, summed per time-step
+  real total_bias_energy;
+
+private:
+
+  /// Array of active collective variable biases
+  std::vector<colvarbias *> biases_active_;
+
+public:
+
+  /// Array of active collective variable biases
+  std::vector<colvarbias *> *biases_active();
 
   /// \brief Whether debug output should be enabled (compile-time option)
   static inline bool debug()
@@ -188,6 +233,8 @@ public:
     return COLVARS_DEBUG;
   }
 
+  /// \brief How many objects are configured yet?
+  size_t size() const;
 
   /// \brief Constructor \param config_name Configuration file name
   /// \param restart_name (optional) Restart file name
@@ -209,8 +256,11 @@ public:
   /// \brief Parse a "clean" config string (no comments)
   int parse_config(std::string &conf);
 
-
   // Parse functions (setup internal data based on a string)
+
+  /// Allow reading from Windows text files using using std::getline
+  /// (which can still be used when the text is produced by Colvars itself)
+  static std::istream & getline(std::istream &is, std::string &line);
 
   /// Parse the few module's global parameters
   int parse_global_params(std::string const &conf);
@@ -221,13 +271,32 @@ public:
   /// Parse and initialize collective variable biases
   int parse_biases(std::string const &conf);
 
+  /// \brief Add new configuration during parsing (e.g. to implement
+  /// back-compatibility); cannot be nested, i.e. conf should not contain
+  /// anything that triggers another call
+  int append_new_config(std::string const &conf);
+
+private:
+
+  /// Auto-generated configuration during parsing (e.g. to implement
+  /// back-compatibility)
+  std::string extra_conf;
+
   /// Parse and initialize collective variable biases of a specific type
   template <class bias_type>
-  int parse_biases_type(std::string const &conf, char const *keyword, size_t &bias_count);
+  int parse_biases_type(std::string const &conf, char const *keyword);
 
   /// Test error condition and keyword parsing
   /// on error, delete new bias
   bool check_new_bias(std::string &conf, char const *key);
+
+public:
+
+  /// Return how many biases have this feature enabled
+  static int num_biases_feature(int feature_id);
+
+  /// Return how many biases are defined with this type
+  static int num_biases_type(std::string const &type);
 
 private:
   /// Useful wrapper to interrupt parsing if any error occurs
@@ -249,12 +318,6 @@ public:
   /// (Re)initialize the output trajectory and state file (does not write it yet)
   int setup_output();
 
-#ifdef NAMD_VERSION
-  typedef ofstream_namd ofstream;
-#else
-  typedef std::ofstream ofstream;
-#endif
-
   /// Read the input restart file
   std::istream & read_restart(std::istream &is);
   /// Write the output restart file
@@ -262,13 +325,17 @@ public:
 
   /// Open a trajectory file if requested (and leave it open)
   int open_traj_file(std::string const &file_name);
-  /// Close it
+  /// Close it (note: currently unused)
   int close_traj_file();
   /// Write in the trajectory file
   std::ostream & write_traj(std::ostream &os);
   /// Write explanatory labels in the trajectory file
   std::ostream & write_traj_label(std::ostream &os);
 
+  /// Write all trajectory files
+  int write_traj_files();
+  /// Write all restart files
+  int write_restart_files();
   /// Write all FINAL output files
   int write_output_files();
   /// Backup a file before writing it
@@ -279,6 +346,9 @@ public:
 
   /// Look up a colvar by name; returns NULL if not found
   static colvar * colvar_by_name(std::string const &name);
+
+  /// Look up a named atom group by name; returns NULL if not found
+  static atom_group * atom_group_by_name(std::string const &name);
 
   /// Load new configuration for the given bias -
   /// currently works for harmonic (force constant and/or centers)
@@ -300,11 +370,21 @@ public:
   //// Share among replicas.
   int bias_share(std::string const &bias_name);
 
-  /// Calculate collective variables and biases
+  /// Main worker function
   int calc();
+
+  /// Calculate collective variables
+  int calc_colvars();
+
+  /// Calculate biases
+  int calc_biases();
+
+  /// Integrate bias and restraint forces, send colvar forces to atoms
+  int update_colvar_forces();
 
   /// Perform analysis
   int analyze();
+
   /// \brief Read a collective variable trajectory (post-processing
   /// only, not called at runtime)
   int read_traj(char const *traj_filename,
@@ -343,7 +423,7 @@ public:
   /// Number of characters to represent the collective variables energy
   static size_t const en_width;
   /// Line separator in the log output
-  static std::string const line_marker;
+  static const char * const line_marker;
 
 
   // proxy functions
@@ -361,17 +441,17 @@ public:
   /// \brief Time step of MD integrator (fs)
   static real dt();
 
-  /// Request calculation of system force from MD engine
-  static void request_system_force();
+  /// Request calculation of total force from MD engine
+  static void request_total_force();
 
   /// Print a message to the main log
   static void log(std::string const &message);
 
   /// Print a message to the main log and exit with error code
-  static void fatal_error(std::string const &message);
+  static int fatal_error(std::string const &message);
 
   /// Print a message to the main log and set global error code
-  static void error(std::string const &message, int code = GENERAL_ERROR);
+  static int error(std::string const &message, int code = COLVARS_ERROR);
 
   /// Print a message to the main log and exit normally
   static void exit(std::string const &message);
@@ -387,8 +467,7 @@ public:
   /// \brief Get the distance between two atomic positions with pbcs handled
   /// correctly
   static rvector position_distance(atom_pos const &pos1,
-                                    atom_pos const &pos2);
-
+                                   atom_pos const &pos2);
 
   /// \brief Get the square distance between two positions (with
   /// periodic boundary conditions handled transparently)
@@ -397,30 +476,16 @@ public:
   /// an analytical square distance (while taking the square of
   /// position_distance() would produce leads to a cusp)
   static real position_dist2(atom_pos const &pos1,
-                              atom_pos const &pos2);
-
-  /// \brief Get the closest periodic image to a reference position
-  /// \param pos The position to look for the closest periodic image
-  /// \param ref_pos (optional) The reference position
-  static void select_closest_image(atom_pos &pos,
-                                    atom_pos const &ref_pos);
-
-  /// \brief Perform select_closest_image() on a set of atomic positions
-  ///
-  /// After that, distance vectors can then be calculated directly,
-  /// without using position_distance()
-  static void select_closest_images(std::vector<atom_pos> &pos,
-                                     atom_pos const &ref_pos);
-
+                             atom_pos const &pos2);
 
   /// \brief Names of groups from a Gromacs .ndx file to be read at startup
-  static std::list<std::string> index_group_names;
+  std::list<std::string> index_group_names;
 
   /// \brief Groups from a Gromacs .ndx file read at startup
-  static std::list<std::vector<int> > index_groups;
+  std::list<std::vector<int> > index_groups;
 
   /// \brief Read a Gromacs .ndx file
-  static int read_index_file(char const *filename);
+  int read_index_file(char const *filename);
 
 
   /// \brief Create atoms from a file \param filename name of the file
@@ -472,26 +537,23 @@ protected:
   std::string cv_traj_name;
 
   /// Collective variables output trajectory file
-  colvarmodule::ofstream cv_traj_os;
+  std::ostream *cv_traj_os;
 
   /// Appending to the existing trajectory file?
   bool cv_traj_append;
 
-  /// Output restart file
-  colvarmodule::ofstream restart_out_os;
+private:
 
-  /// \brief Counter for the current depth in the object hierarchy (useg e.g. in output
-  static size_t depth;
+  /// Counter for the current depth in the object hierarchy (useg e.g. in output)
+  size_t depth_s;
 
-  /// Use scripted colvars forces?
-  static bool use_scripted_forces;
+  /// Thread-specific depth
+  std::vector<size_t> depth_v;
 
 public:
 
-  /// \brief Pointer to the proxy object, used to retrieve atomic data
-  /// from the hosting program; it is static in order to be accessible
-  /// from static functions in the colvarmodule class
-  static colvarproxy *proxy;
+  /// Get the current object depth in the hierarchy
+  static size_t & depth();
 
   /// Increase the depth (number of indentations in the output)
   static void increase_depth();
@@ -499,7 +561,28 @@ public:
   /// Decrease the depth (number of indentations in the output)
   static void decrease_depth();
 
-  static inline bool scripted_forces() { return use_scripted_forces; }
+  static inline bool scripted_forces()
+  {
+    return use_scripted_forces;
+  }
+
+  /// Use scripted colvars forces?
+  static bool use_scripted_forces;
+
+  /// Wait for all biases before calculating scripted forces?
+  static bool scripting_after_biases;
+
+  /// Calculate the energy and forces of scripted biases
+  int calc_scripted_forces();
+
+  /// \brief Pointer to the proxy object, used to retrieve atomic data
+  /// from the hosting program; it is static in order to be accessible
+  /// from static functions in the colvarmodule class
+  static colvarproxy *proxy;
+
+  /// \brief Accessor for the above
+  static colvarmodule *main();
+
 };
 
 
@@ -594,21 +677,9 @@ inline int cvm::replica_comm_send(char* msg_data, int msg_len, int dest_rep) {
 }
 
 
-inline void cvm::request_system_force()
+inline void cvm::request_total_force()
 {
-  proxy->request_system_force(true);
-}
-
-inline void cvm::select_closest_image(atom_pos &pos,
-                                       atom_pos const &ref_pos)
-{
-  proxy->select_closest_image(pos, ref_pos);
-}
-
-inline void cvm::select_closest_images(std::vector<atom_pos> &pos,
-                                        atom_pos const &ref_pos)
-{
-  proxy->select_closest_images(pos, ref_pos);
+  proxy->request_total_force(true);
 }
 
 inline cvm::rvector cvm::position_distance(atom_pos const &pos1,

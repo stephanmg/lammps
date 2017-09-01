@@ -256,7 +256,7 @@ void PairColloid::settings(int narg, char **arg)
   if (allocated) {
     int i,j;
     for (i = 1; i <= atom->ntypes; i++)
-      for (j = i+1; j <= atom->ntypes; j++)
+      for (j = i; j <= atom->ntypes; j++)
         if (setflag[i][j]) cut[i][j] = cut_global;
   }
 }
@@ -272,8 +272,8 @@ void PairColloid::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(arg[1],atom->ntypes,jlo,jhi);
+  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
+  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
 
   double a12_one = force->numeric(FLERR,arg[2]);
   double sigma_one = force->numeric(FLERR,arg[3]);
@@ -354,7 +354,7 @@ double PairColloid::init_one(int i, int j)
   lj4[j][i] = lj4[i][j] = 4.0 * epsilon * sigma6[i][j];
 
   offset[j][i] = offset[i][j] = 0.0;
-  if (offset_flag) {
+  if (offset_flag && (cut[i][j] > 0.0)) {
     double tmp;
     offset[j][i] = offset[i][j] =
       single(0,0,i,j,cut[i][j]*cut[i][j],0.0,1.0,tmp);

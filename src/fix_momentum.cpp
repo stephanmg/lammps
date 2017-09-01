@@ -36,7 +36,7 @@ FixMomentum::FixMomentum(LAMMPS *lmp, int narg, char **arg) :
   nevery = force->inumeric(FLERR,arg[3]);
   if (nevery <= 0) error->all(FLERR,"Illegal fix momentum command");
 
-  linear = angular = rescale = 0;
+  dynamic = linear = angular = rescale = 0;
 
   int iarg = 4;
   while (iarg < narg) {
@@ -64,10 +64,7 @@ FixMomentum::FixMomentum(LAMMPS *lmp, int narg, char **arg) :
         zflag < 0 || zflag > 1)
       error->all(FLERR,"Illegal fix momentum command");
 
-  // cannot have 0 atoms in group
-
-  if (group->count(igroup) == 0)
-    error->all(FLERR,"Fix momentum group has no atoms");
+  dynamic_group_allow = 1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -83,6 +80,13 @@ int FixMomentum::setmask()
 
 void FixMomentum::init()
 {
+  if (group->dynamic[igroup]) {
+    dynamic = 1;
+  } else {
+   if (group->count(igroup) == 0)
+     error->all(FLERR,"Fix momentum group has no atoms");
+  }
+
   masstotal = group->mass(igroup);
 }
 
@@ -95,6 +99,13 @@ void FixMomentum::end_of_step()
   const int nlocal = atom->nlocal;
   double ekin_old,ekin_new;
   ekin_old = ekin_new = 0.0;
+
+  if (dynamic)
+    masstotal = group->mass(igroup);
+
+  // do nothing is group is empty, i.e. mass is zero;
+
+  if (masstotal == 0.0) return;
 
   // compute kinetic energy before momentum removal, if needed
 

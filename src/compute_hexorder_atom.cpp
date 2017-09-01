@@ -44,7 +44,8 @@ using namespace MathConst;
 /* ---------------------------------------------------------------------- */
 
 ComputeHexOrderAtom::ComputeHexOrderAtom(LAMMPS *lmp, int narg, char **arg) :
-  Compute(lmp, narg, arg)
+  Compute(lmp, narg, arg),
+  distsq(NULL), nearest(NULL), qnarray(NULL)
 {
   if (narg < 3 ) error->all(FLERR,"Illegal compute hexorder/atom command");
 
@@ -87,10 +88,7 @@ ComputeHexOrderAtom::ComputeHexOrderAtom(LAMMPS *lmp, int narg, char **arg) :
   size_peratom_cols = ncol;
 
   nmax = 0;
-  qnarray = NULL;
   maxneigh = 0;
-  distsq = NULL;
-  nearest = NULL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -148,7 +146,7 @@ void ComputeHexOrderAtom::compute_peratom()
 
   // grow order parameter array if necessary
 
-  if (atom->nlocal > nmax) {
+  if (atom->nmax > nmax) {
     memory->destroy(qnarray);
     nmax = atom->nmax;
     memory->create(qnarray,nmax,ncol,"hexorder/atom:qnarray");
@@ -250,7 +248,7 @@ inline void ComputeHexOrderAtom::calc_qn_complex(double delx, double dely, doubl
   double x = delx*rinv;
   double y = dely*rinv;
   std::complex<double> z(x, y);
-  std::complex<double> zn = pow(z, nnn);
+  std::complex<double> zn = pow(z, ndegree);
   u = real(zn);
   v = imag(zn);
 }
@@ -261,9 +259,9 @@ inline void ComputeHexOrderAtom::calc_qn_complex(double delx, double dely, doubl
 inline void ComputeHexOrderAtom::calc_qn_trig(double delx, double dely, double &u, double &v) {
   double ntheta;
   if(fabs(delx) <= MY_EPSILON) {
-    if(dely > 0.0) ntheta = nnn * MY_PI / 2.0;
-    else ntheta = nnn * 3.0 * MY_PI / 2.0;
-  } else ntheta = nnn * atan(dely / delx);
+    if(dely > 0.0) ntheta = ndegree * MY_PI / 2.0;
+    else ntheta = ndegree * 3.0 * MY_PI / 2.0;
+  } else ntheta = ndegree * atan(dely / delx);
   u = cos(ntheta);
   v = sin(ntheta);
 }

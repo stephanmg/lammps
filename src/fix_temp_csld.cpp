@@ -41,7 +41,8 @@ enum{CONSTANT,EQUAL};
 /* ---------------------------------------------------------------------- */
 
 FixTempCSLD::FixTempCSLD(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg),
+  vhold(NULL), tstr(NULL), id_temp(NULL), random(NULL)
 {
   if (narg != 7) error->all(FLERR,"Illegal fix temp/csld command");
 
@@ -153,6 +154,9 @@ void FixTempCSLD::init()
   if (icompute < 0)
     error->all(FLERR,"Temperature ID for fix temp/csld does not exist");
   temperature = modify->compute[icompute];
+
+  if (modify->check_rigid_group_overlap(groupbit))
+    error->warning(FLERR,"Cannot thermostat atoms in rigid bodies");
 
   if (temperature->tempbias) which = BIAS;
   else which = NOBIAS;

@@ -1,10 +1,18 @@
-/// -*- c++ -*-
+// -*- c++ -*-
+
+// This file is part of the Collective Variables module (Colvars).
+// The original version of Colvars and its updates are located at:
+// https://github.com/colvars/colvars
+// Please update all Colvars source files before making any changes.
+// If you wish to distribute your changes, please submit them to the
+// Colvars repository at GitHub.
 
 #ifndef COLVARATOMS_H
 #define COLVARATOMS_H
 
 #include "colvarmodule.h"
 #include "colvarparse.h"
+#include "colvardeps.h"
 
 
 /// \brief Stores numeric id, mass and all mutable data for an atom,
@@ -44,7 +52,7 @@ public:
 
   /// \brief System force at the previous step (copied from the
   /// program, can be modified if necessary)
-  cvm::rvector    system_force;
+  cvm::rvector    total_force;
 
   /// \brief Gradient of a scalar collective variable with respect
   /// to this atom
@@ -63,7 +71,7 @@ public:
 
   /// \brief Initialize an atom for collective variable calculation
   /// and get its internal identifier \param atom_number Atom index in
-  /// the system topology (starting from 1)
+  /// the system topology (1-based)
   atom(int atom_number);
 
   /// \brief Initialize an atom for collective variable calculation
@@ -85,7 +93,7 @@ public:
   inline void reset_data()
   {
     pos = cvm::atom_pos(0.0);
-    vel = grad = system_force = cvm::rvector(0.0);
+    vel = grad = total_force = cvm::rvector(0.0);
   }
 
   /// Get the latest value of the mass
@@ -112,10 +120,10 @@ public:
     vel = (cvm::proxy)->get_atom_velocity(index);
   }
 
-  /// Get the system force
-  inline void read_system_force()
+  /// Get the total force
+  inline void read_total_force()
   {
-    system_force = (cvm::proxy)->get_atom_system_force(index);
+    total_force = (cvm::proxy)->get_atom_total_force(index);
   }
 
   /// \brief Apply a force to the atom
@@ -138,16 +146,25 @@ public:
 /// \brief Group of \link atom \endlink objects, mostly used by a
 /// \link cvc \endlink object to gather all atomic data
 class colvarmodule::atom_group
-  : public colvarparse
+  : public colvarparse, public colvardeps
 {
 public:
 
-  /// \brief Initialize the group by looking up its configuration
-  /// string in conf and parsing it; this is actually done by parse(),
-  /// which is a member function so that a group can be initialized
-  /// also after construction
-  atom_group(std::string const &conf,
-             char const        *key);
+
+  /// \brief Default constructor
+  atom_group();
+
+  /// \brief Create a group object, assign a name to it
+  atom_group(char const *key);
+
+  /// \brief Initialize the group after a (temporary) vector of atoms
+  atom_group(std::vector<cvm::atom> const &atoms_in);
+
+  /// \brief Destructor
+  ~atom_group();
+
+  /// \brief Optional name to reuse properties of this in other groups
+  std::string name;
 
   /// \brief Keyword used to define the group
   // TODO Make this field part of the data structures that link a group to a CVC
@@ -164,14 +181,12 @@ public:
   int parse(std::string const &conf);
 
   int add_atom_numbers(std::string const &numbers_conf);
+  int add_atoms_of_group(atom_group const * ag);
   int add_index_group(std::string const &index_group_name);
   int add_atom_numbers_range(std::string const &range_conf);
   int add_atom_name_residue_range(std::string const &psf_segid,
                                   std::string const &range_conf);
   int parse_fitting_options(std::string const &group_conf);
-
-  /// \brief Initialize the group after a (temporary) vector of atoms
-  atom_group(std::vector<cvm::atom> const &atoms_in);
 
   /// \brief Add an atom object to this group
   int add_atom(cvm::atom const &a);
@@ -187,14 +202,18 @@ public:
   /// change atom masses after their initialization.
   void reset_mass(std::string &name, int i, int j);
 
-  /// \brief Whether or not the properties of this group will be computed in parallel
-  bool b_scalable;
+  /// \brief Implementation of the feature list for atom group
+  static std::vector<feature *> ag_features;
 
-  /// \brief Default constructor
-  atom_group();
-
-  /// \brief Destructor
-  ~atom_group();
+  /// \brief Implementation of the feature list accessor for atom group
+  virtual const std::vector<feature *> &features()
+  {
+    return ag_features;
+  }
+  virtual std::vector<feature *> &modify_features()
+  {
+    return ag_features;
+  }
 
 protected:
 
@@ -247,6 +266,8 @@ public:
     return atoms.size();
   }
 
+  std::string const print_atom_ids() const;
+
   /// \brief If this option is on, this group merely acts as a wrapper
   /// for a fixed position; any calls to atoms within or to
   /// functions that return disaggregated data will fail
@@ -279,10 +300,6 @@ public:
   /// cvc's (eg rmsd, eigenvector) will not override the user's choice
   bool b_user_defined_fit;
 
-  /// \brief Whether or not the derivatives of the roto-translation
-  /// should be included when calculating the colvar's gradients (default: no)
-  bool b_fit_gradients;
-
   /// \brief use reference coordinates for b_center or b_rotate
   std::vector<cvm::atom_pos> ref_pos;
 
@@ -293,7 +310,7 @@ public:
 
   /// \brief If b_center or b_rotate is true, use this group to
   /// define the transformation (default: this group itself)
-  atom_group                *ref_pos_group;
+  atom_group                *fitting_group;
 
   /// Total mass of the atom group
   cvm::real total_mass;
@@ -325,27 +342,23 @@ public:
   /// \brief Move all positions
   void apply_translation(cvm::rvector const &t);
 
-  /// \brief Rotate all positions around the center of geometry
-  void apply_rotation(cvm::rotation const &q);
-
-
   /// \brief Get the current velocities; this must be called always
   /// *after* read_positions(); if b_rotate is defined, the same
   /// rotation applied to the coordinates will be used
   void read_velocities();
 
-  /// \brief Get the current system_forces; this must be called always
+  /// \brief Get the current total_forces; this must be called always
   /// *after* read_positions(); if b_rotate is defined, the same
   /// rotation applied to the coordinates will be used
-  void read_system_forces();
+  void read_total_forces();
 
   /// Call reset_data() for each atom
   inline void reset_atoms_data()
   {
     for (cvm::atom_iter ai = atoms.begin(); ai != atoms.end(); ai++)
       ai->reset_data();
-    if (ref_pos_group)
-      ref_pos_group->reset_atoms_data();
+    if (fitting_group)
+      fitting_group->reset_atoms_data();
   }
 
   /// \brief Recompute all mutable quantities that are required to compute CVCs
@@ -357,10 +370,17 @@ public:
   /// \brief Calculate the center of geometry of the atomic positions, assuming
   /// that they are already pbc-wrapped
   int calc_center_of_geometry();
+
 private:
+
   /// \brief Center of geometry
   cvm::atom_pos cog;
+
+  /// \brief Center of geometry before any fitting
+  cvm::atom_pos cog_orig;
+
 public:
+
   /// \brief Return the center of geometry of the atomic positions
   inline cvm::atom_pos center_of_geometry() const
   {
@@ -401,11 +421,11 @@ public:
     return dip;
   }
 
-  /// \brief Return a copy of the system forces
-  std::vector<cvm::rvector> system_forces() const;
+  /// \brief Return a copy of the total forces
+  std::vector<cvm::rvector> total_forces() const;
 
   /// \brief Return a copy of the aggregated total force on the group
-  cvm::rvector system_force() const;
+  cvm::rvector total_force() const;
 
 
   /// \brief Shorthand: save the specified gradient on each atom,
@@ -442,20 +462,14 @@ public:
   /// are not used, either because they were not defined (e.g because
   /// the colvar has not a scalar value) or the biases require to
   /// micromanage the force.
+  /// This function will be phased out eventually, in favor of
+  /// apply_colvar_force() once that is implemented for non-scalar values
   void apply_force(cvm::rvector const &force);
 
-  /// \brief Apply an array of forces directly on the individual
-  /// atoms; the length of the specified vector must be the same of
-  /// this \link atom_group \endlink.
-  ///
-  /// If the group is being rotated to a reference frame (e.g. to
-  /// express the colvar independently from the solute rotation), the
-  /// forces are rotated back to the original frame.  Colvar gradients
-  /// are not used, either because they were not defined (e.g because
-  /// the colvar has not a scalar value) or the biases require to
-  /// micromanage the forces.
-  void apply_forces(std::vector<cvm::rvector> const &forces);
-
+  /// Implements possible actions to be carried out
+  /// when a given feature is enabled
+  /// This overloads the base function in colvardeps
+  void do_feature_side_effects(int id);
 };
 
 

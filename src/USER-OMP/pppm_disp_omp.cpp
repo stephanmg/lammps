@@ -12,7 +12,8 @@
 ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
-   Contributing author: Axel Kohlmeyer (Temple U), Rolf Isele-Holder (RWTH Aachen University)
+   Contributing authors: Axel Kohlmeyer (Temple U)
+                         Rolf Isele-Holder (RWTH Aachen University)
 ------------------------------------------------------------------------- */
 
 #include "pppm_disp_omp.h"
@@ -50,6 +51,30 @@ PPPMDispOMP::PPPMDispOMP(LAMMPS *lmp, int narg, char **arg) :
   suffix_flag |= Suffix::OMP;
 }
 
+/* ---------------------------------------------------------------------- */
+
+PPPMDispOMP::~PPPMDispOMP()
+{
+#if defined(_OPENMP)
+#pragma omp parallel default(none)
+#endif
+  {
+#if defined(_OPENMP)
+    const int tid = omp_get_thread_num();
+#else
+    const int tid = 0;
+#endif
+    if (function[0]) {
+      ThrData * thr = fix->get_thr(tid);
+      thr->init_pppm(-order,memory);
+    }
+    if (function[1] + function[2]) {
+      ThrData * thr = fix->get_thr(tid);
+      thr->init_pppm_disp(-order_6,memory);
+    }
+  }
+}
+
 /* ----------------------------------------------------------------------
    allocate memory that depends on # of K-vectors and order
 ------------------------------------------------------------------------- */
@@ -75,34 +100,6 @@ void PPPMDispOMP::allocate()
     if (function[1] + function[2]) {
       ThrData * thr = fix->get_thr(tid);
       thr->init_pppm_disp(order_6,memory);
-    }
-  }
-}
-
-/* ----------------------------------------------------------------------
-   free memory that depends on # of K-vectors and order
-------------------------------------------------------------------------- */
-
-void PPPMDispOMP::deallocate()
-{
-  PPPMDisp::deallocate();
-
-#if defined(_OPENMP)
-#pragma omp parallel default(none)
-#endif
-  {
-#if defined(_OPENMP)
-    const int tid = omp_get_thread_num();
-#else
-    const int tid = 0;
-#endif
-    if (function[0]) {
-      ThrData * thr = fix->get_thr(tid);
-      thr->init_pppm(-order,memory);
-    }
-    if (function[1] + function[2]) {
-      ThrData * thr = fix->get_thr(tid);
-      thr->init_pppm_disp(-order_6,memory);
     }
   }
 }

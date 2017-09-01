@@ -255,7 +255,7 @@ void PairNMCutCoulLong::settings(int narg, char **arg)
   if (allocated) {
     int i,j;
     for (i = 1; i <= atom->ntypes; i++)
-      for (j = i+1; j <= atom->ntypes; j++)
+      for (j = i; j <= atom->ntypes; j++)
         if (setflag[i][j]) cut_lj[i][j] = cut_lj_global;
   }
 }
@@ -271,8 +271,8 @@ void PairNMCutCoulLong::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(arg[1],atom->ntypes,jlo,jhi);
+  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
+  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
 
   double e0_one = force->numeric(FLERR,arg[2]);
   double r0_one = force->numeric(FLERR,arg[3]);
@@ -339,7 +339,7 @@ double PairNMCutCoulLong::init_one(int i, int j)
   r0n[i][j] = pow(r0[i][j],nn[i][j]);
   r0m[i][j] = pow(r0[i][j],mm[i][j]);
 
-  if (offset_flag) {
+  if (offset_flag && (cut_lj[i][j] > 0.0)) {
     offset[i][j] = e0nm[i][j] *
       ((mm[i][j]*r0n[i][j] / pow(cut_lj[i][j],nn[i][j])) -
        (nn[i][j]*r0m[i][j] / pow(cut_lj[i][j],mm[i][j])));

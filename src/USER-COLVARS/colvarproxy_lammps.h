@@ -1,23 +1,32 @@
 // -*- c++ -*-
 
+// This file is part of the Collective Variables module (Colvars).
+// The original version of Colvars and its updates are located at:
+// https://github.com/colvars/colvars
+// Please update all Colvars source files before making any changes.
+// If you wish to distribute your changes, please submit them to the
+// Colvars repository at GitHub.
+
 #ifndef COLVARPROXY_LAMMPS_H
 #define COLVARPROXY_LAMMPS_H
 
+#include "colvarproxy_lammps_version.h"
+
 #include "colvarmodule.h"
 #include "colvarproxy.h"
+#include "colvarvalue.h"
 
 #include "lammps.h"
 #include "domain.h"
 #include "force.h"
-#include "random_park.h"
 #include "update.h"
 
 #include <string>
 #include <vector>
 #include <iostream>
 
-#ifndef COLVARPROXY_VERSION
-#define COLVARPROXY_VERSION "2016-02-28"
+#if defined(_OPENMP)
+#include <omp.h>
 #endif
 
 /* struct for packed data communication of coordinates and forces. */
@@ -51,7 +60,7 @@ class colvarproxy_lammps : public colvarproxy {
   int  previous_step;
 
   bool first_timestep;
-  bool system_force_requested;
+  bool total_force_requested;
   bool do_exit;
 
   // std::vector<int>          colvars_atoms;
@@ -82,7 +91,7 @@ class colvarproxy_lammps : public colvarproxy {
   // methods for lammps to move data or trigger actions in the proxy
  public:
   void set_temperature(double t) { t_target = t; };
-  bool need_system_forces() const { return  system_force_requested; };
+  bool total_forces_enabled() const { return  total_force_requested; };
   bool want_exit() const { return do_exit; };
 
   // perform colvars computation. returns biasing energy
@@ -105,7 +114,7 @@ class colvarproxy_lammps : public colvarproxy {
   inline size_t restart_frequency() { return restart_every; };
 
   void add_energy(cvm::real energy) { bias_energy += energy; };
-  void request_system_force(bool yesno) { system_force_requested = yesno; };
+  void request_total_force(bool yesno) { total_force_requested = yesno; };
 
   void log(std::string const &message);
   void error(std::string const &message);
@@ -130,6 +139,22 @@ class colvarproxy_lammps : public colvarproxy {
 
   // implementation of optional methods from base class
  public:
+
+#if defined(_OPENMP)
+  // SMP support
+  int smp_enabled();
+  int smp_colvars_loop();
+  int smp_biases_loop();
+  int smp_thread_id();
+  int smp_num_threads();
+protected:
+  omp_lock_t smp_lock_state;
+public:
+  int smp_lock();
+  int smp_trylock();
+  int smp_unlock();
+#endif
+
   // Multi-replica support
   // Indicate if multi-replica support is available and active
   virtual bool replica_enabled() { return (inter_comm != MPI_COMM_NULL); }

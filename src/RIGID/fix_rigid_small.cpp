@@ -41,10 +41,6 @@ using namespace LAMMPS_NS;
 using namespace FixConst;
 using namespace MathConst;
 
-// allocate space for static class variable
-
-FixRigidSmall *FixRigidSmall::frsptr;
-
 #define MAXLINE 1024
 #define CHUNK 1024
 #define ATTRIBUTE_PERBODY 20
@@ -54,7 +50,7 @@ FixRigidSmall *FixRigidSmall::frsptr;
 #define BIG 1.0e20
 
 #define SINERTIA 0.4            // moment of inertia prefactor for sphere
-#define EINERTIA 0.4            // moment of inertia prefactor for ellipsoid
+#define EINERTIA 0.2            // moment of inertia prefactor for ellipsoid
 #define LINERTIA (1.0/12.0)     // moment of inertia prefactor for line segment
 
 #define DELTA_BODY 10000
@@ -67,7 +63,12 @@ enum{FULL_BODY,INITIAL,FINAL,FORCE_TORQUE,VCM_ANGMOM,XCM_MASS,ITENSOR,DOF};
 /* ---------------------------------------------------------------------- */
 
 FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg), step_respa(NULL), 
+  infile(NULL), body(NULL), bodyown(NULL), bodytag(NULL), atom2body(NULL), 
+  xcmimage(NULL), displace(NULL), eflags(NULL), orient(NULL), dorient(NULL), 
+  avec_ellipsoid(NULL), avec_line(NULL), avec_tri(NULL), counts(NULL), 
+  itensor(NULL), mass_body(NULL), langextra(NULL), random(NULL), id_dilate(NULL), 
+  onemols(NULL), hash(NULL), bbox(NULL), ctr(NULL), idclose(NULL), rsqclose(NULL)
 {
   int i;
 
@@ -79,6 +80,7 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   virial_flag = 1;
   create_attribute = 1;
   dof_flag = 1;
+  enforce2d_flag = 1;
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -132,6 +134,7 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   langflag = 0;
   infile = NULL;
   onemols = NULL;
+  reinitflag = 1;
 
   tstat_flag = 0;
   pstat_flag = 0;
@@ -167,6 +170,7 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR,"Fix rigid/small langevin period must be > 0.0");
       if (seed <= 0) error->all(FLERR,"Illegal fix rigid/small command");
       iarg += 5;
+
     } else if (strcmp(arg[iarg],"infile") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/small command");
       delete [] infile;
@@ -174,7 +178,16 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
       infile = new char[n];
       strcpy(infile,arg[iarg+1]);
       restart_file = 1;
+      reinitflag = 0;
       iarg += 2;
+
+    } else if (strcmp(arg[iarg],"reinit") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/small command");
+      if (strcmp("yes",arg[iarg+1]) == 0) reinitflag = 1;
+      else if  (strcmp("no",arg[iarg+1]) == 0) reinitflag = 0;
+      else error->all(FLERR,"Illegal fix rigid/small command");
+      iarg += 2;
+
     } else if (strcmp(arg[iarg],"mol") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/small command");
       int imol = atom->find_molecule(arg[iarg+1]);
@@ -514,14 +527,15 @@ void FixRigidSmall::init()
 }
 
 /* ----------------------------------------------------------------------
-   setup static/dynamic properties of rigid bodies, using current atom info
-   only do initialization once, b/c properties may not be re-computable
-     especially if overlapping particles or bodies inserted from mol template
-   do not do dynamic init if read body properties from infile
-     this is b/c the infile defines the static and dynamic properties
-     and may not be computable if contain overlapping particles
-     setup_bodies_static() reads infile itself
-   cannot do this until now, b/c requires comm->setup() to have setup stencil
+   setup static/dynamic properties of rigid bodies, using current atom info.
+   if reinitflag is not set, do the initialization only once, b/c properties
+   may not be re-computable especially if overlapping particles or bodies
+   are inserted from mol template.
+     do not do dynamic init if read body properties from infile. this
+   is b/c the infile defines the static and dynamic properties and may not
+   be computable if contain overlapping particles setup_bodies_static()
+   reads infile itself.
+     cannot do this until now, b/c requires comm->setup() to have setup stencil
    invoke pre_neighbor() to insure body xcmimage flags are reset
      needed if Verlet::setup::pbc() has remapped/migrated atoms for 2nd run
      setup_bodies_static() invokes pre_neighbor itself
@@ -529,9 +543,13 @@ void FixRigidSmall::init()
 
 void FixRigidSmall::setup_pre_neighbor()
 {
-  if (!setupflag) setup_bodies_static();
+  if (reinitflag || !setupflag)
+    setup_bodies_static();
   else pre_neighbor();
-  if (!setupflag && !infile) setup_bodies_dynamic();
+
+  if ((reinitflag || !setupflag) && !infile)
+    setup_bodies_dynamic();
+
   setupflag = 1;
 }
 
@@ -729,14 +747,14 @@ void FixRigidSmall::post_force(int vflag)
     vcm = body[ibody].vcm;
     omega = body[ibody].omega;
     inertia = body[ibody].inertia;
-
+    
     gamma1 = -body[ibody].mass / t_period / ftm2v;
     gamma2 = sqrt(body[ibody].mass) * tsqrt *
       sqrt(24.0*boltz/t_period/dt/mvv2e) / ftm2v;
     langextra[ibody][0] = gamma1*vcm[0] + gamma2*(random->uniform()-0.5);
     langextra[ibody][1] = gamma1*vcm[1] + gamma2*(random->uniform()-0.5);
     langextra[ibody][2] = gamma1*vcm[2] + gamma2*(random->uniform()-0.5);
-
+    
     gamma1 = -1.0 / t_period / ftm2v;
     gamma2 = tsqrt * sqrt(24.0*boltz/t_period/dt/mvv2e) / ftm2v;
     langextra[ibody][3] = inertia[0]*gamma1*omega[0] +
@@ -745,6 +763,34 @@ void FixRigidSmall::post_force(int vflag)
       sqrt(inertia[1])*gamma2*(random->uniform()-0.5);
     langextra[ibody][5] = inertia[2]*gamma1*omega[2] +
       sqrt(inertia[2])*gamma2*(random->uniform()-0.5);
+  }
+}
+
+/* ----------------------------------------------------------------------
+   called from FixEnforce post_force() for 2d problems
+   zero all body values that should be zero for 2d model
+------------------------------------------------------------------------- */
+
+void FixRigidSmall::enforce2d()
+{
+  Body *b;
+
+  for (int ibody = 0; ibody < nlocal_body; ibody++) {
+    b = &body[ibody];
+    b->xcm[2] = 0.0;
+    b->vcm[2] = 0.0;
+    b->fcm[2] = 0.0;
+    b->torque[0] = 0.0;
+    b->torque[1] = 0.0;
+    b->angmom[0] = 0.0;
+    b->angmom[1] = 0.0;
+    b->omega[0] = 0.0;
+    b->omega[1] = 0.0;
+    if (langflag && langextra) {
+      langextra[ibody][2] = 0.0;
+      langextra[ibody][3] = 0.0;
+      langextra[ibody][4] = 0.0;
+    }
   }
 }
 
@@ -997,7 +1043,7 @@ int FixRigidSmall::dof(int tgroup)
     j = atom2body[i];
     counts[j][2]++;
     if (mask[i] & tgroupbit) {
-      if (extended && eflags[i]) counts[j][1]++;
+      if (extended && (eflags[i] & ~(POINT | DIPOLE))) counts[j][1]++;
       else counts[j][0]++;
     }
   }
@@ -1465,8 +1511,7 @@ void FixRigidSmall::create_bodies()
   // func = update bbox with atom coords from every proc
   // when done, have full bbox for every rigid body my atoms are part of
 
-  frsptr = this;
-  comm->ring(m,sizeof(double),buf,1,ring_bbox,NULL);
+  comm->ring(m,sizeof(double),buf,1,ring_bbox,NULL,(void *)this);
 
   // check if any bbox is size 0.0, meaning rigid body is a single particle
 
@@ -1515,8 +1560,7 @@ void FixRigidSmall::create_bodies()
   // func = update idclose,rsqclose with atom IDs from every proc
   // when done, have idclose for every rigid body my atoms are part of
 
-  frsptr = this;
-  comm->ring(m,sizeof(double),buf,2,ring_nearest,NULL);
+  comm->ring(m,sizeof(double),buf,2,ring_nearest,NULL,(void *)this);
 
   // set bodytag of all owned atoms, based on idclose
   // find max value of rsqclose across all procs
@@ -1547,8 +1591,7 @@ void FixRigidSmall::create_bodies()
   // when done, have rsqfar for all atoms in bodies I own
 
   rsqfar = 0.0;
-  frsptr = this;
-  comm->ring(m,sizeof(double),buf,3,ring_farthest,NULL);
+  comm->ring(m,sizeof(double),buf,3,ring_farthest,NULL,(void *)this);
 
   // find maxextent of rsqfar across all procs
   // if defined, include molecule->maxextent
@@ -1575,8 +1618,9 @@ void FixRigidSmall::create_bodies()
    update bounding box for rigid bodies my atoms are part of
 ------------------------------------------------------------------------- */
 
-void FixRigidSmall::ring_bbox(int n, char *cbuf)
+void FixRigidSmall::ring_bbox(int n, char *cbuf, void *ptr)
 {
+  FixRigidSmall *frsptr = (FixRigidSmall *) ptr;
   std::map<tagint,int> *hash = frsptr->hash;
   double **bbox = frsptr->bbox;
 
@@ -1607,8 +1651,9 @@ void FixRigidSmall::ring_bbox(int n, char *cbuf)
    update nearest atom to body center for rigid bodies my atoms are part of
 ------------------------------------------------------------------------- */
 
-void FixRigidSmall::ring_nearest(int n, char *cbuf)
+void FixRigidSmall::ring_nearest(int n, char *cbuf, void *ptr)
 {
+  FixRigidSmall *frsptr = (FixRigidSmall *) ptr;
   std::map<tagint,int> *hash = frsptr->hash;
   double **ctr = frsptr->ctr;
   tagint *idclose = frsptr->idclose;
@@ -1647,8 +1692,9 @@ void FixRigidSmall::ring_nearest(int n, char *cbuf)
    update rsqfar = distance from owning atom to other atom
 ------------------------------------------------------------------------- */
 
-void FixRigidSmall::ring_farthest(int n, char *cbuf)
+void FixRigidSmall::ring_farthest(int n, char *cbuf, void *ptr)
 {
+  FixRigidSmall *frsptr = (FixRigidSmall *) ptr;
   double **x = frsptr->atom->x;
   imageint *image = frsptr->atom->image;
   int nlocal = frsptr->atom->nlocal;
@@ -2163,7 +2209,7 @@ void FixRigidSmall::setup_bodies_static()
   commflag = ITENSOR;
   comm->reverse_comm_fix(this,6);
 
-  // error check that re-computed momemts of inertia match diagonalized ones
+  // error check that re-computed moments of inertia match diagonalized ones
   // do not do test for bodies with params read from infile
 
   double norm;
@@ -2454,7 +2500,7 @@ void FixRigidSmall::write_restart_file(char *file)
 {
   FILE *fp;
 
-  // do not write file if bodies have not yet been intialized
+  // do not write file if bodies have not yet been initialized
 
   if (!setupflag) return;
 
@@ -2737,6 +2783,8 @@ void FixRigidSmall::set_molecule(int nlocalprev, tagint tagprev, int imol,
 
       b->angmom[0] = b->angmom[1] = b->angmom[2] = 0.0;
       b->omega[0] = b->omega[1] = b->omega[2] = 0.0;
+      b->conjqm[0] = b->conjqm[1] = b->conjqm[2] = b->conjqm[3] = 0.0;
+
       b->image = ((imageint) IMGMAX << IMG2BITS) |
         ((imageint) IMGMAX << IMGBITS) | IMGMAX;
       b->ilocal = i;

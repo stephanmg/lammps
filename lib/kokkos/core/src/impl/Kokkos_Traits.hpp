@@ -1,13 +1,13 @@
 /*
 //@HEADER
 // ************************************************************************
-// 
+//
 //                        Kokkos v. 2.0
 //              Copyright (2014) Sandia Corporation
-// 
+//
 // Under the terms of Contract DE-AC04-94AL85000 with Sandia Corporation,
 // the U.S. Government retains certain rights in this software.
-// 
+//
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -36,7 +36,7 @@
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //
 // Questions? Contact  H. Carter Edwards (hcedwar@sandia.gov)
-// 
+//
 // ************************************************************************
 //@HEADER
 */
@@ -44,9 +44,11 @@
 #ifndef KOKKOSTRAITS_HPP
 #define KOKKOSTRAITS_HPP
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 #include <Kokkos_Macros.hpp>
+#include <string>
+#include <type_traits>
 
 namespace Kokkos {
 namespace Impl {
@@ -54,16 +56,87 @@ namespace Impl {
 //----------------------------------------------------------------------------
 // Help with C++11 variadic argument packs
 
-template< unsigned I , class ... Args >
-struct variadic_type { typedef void type ; };
+template< unsigned I , typename ... Pack >
+struct get_type { typedef void type ; };
 
-template< class T , class ... Args >
-struct variadic_type< 0 , T , Args ... >
-  { typedef T type ; };
+template< typename T , typename ... Pack >
+struct get_type< 0 , T , Pack ... >
+{ typedef T type ; };
 
-template< unsigned I , class T , class ... Args >
-struct variadic_type< I , T , Args ... >
-  { typedef typename variadic_type< I - 1 , Args ... >::type type ; };
+template< unsigned I , typename T , typename ... Pack >
+struct get_type< I , T , Pack ... >
+{ typedef typename get_type< I - 1 , Pack ... >::type type ; };
+
+
+template< typename T , typename ... Pack >
+struct has_type { enum { value = false }; };
+
+template< typename T , typename S , typename ... Pack >
+struct has_type<T,S,Pack...>
+{
+private:
+
+  enum { self_value = std::is_same<T,S>::value };
+
+  typedef has_type<T,Pack...> next ;
+
+  static_assert( ! ( self_value && next::value )
+               , "Error: more than one member of the argument pack matches the type" );
+
+public:
+
+  enum { value = self_value || next::value };
+
+};
+
+
+template< typename DefaultType
+        , template< typename > class Condition
+        , typename ... Pack >
+struct has_condition
+{
+  enum { value = false };
+  typedef DefaultType type ;
+};
+
+template< typename DefaultType
+        , template< typename > class Condition
+        , typename S
+        , typename ... Pack >
+struct has_condition< DefaultType , Condition , S , Pack... >
+{
+private:
+
+  enum { self_value = Condition<S>::value };
+
+  typedef has_condition< DefaultType , Condition , Pack... > next ;
+
+  static_assert( ! ( self_value && next::value )
+               , "Error: more than one member of the argument pack satisfies condition" );
+
+public:
+
+  enum { value = self_value || next::value };
+
+  typedef typename
+    std::conditional< self_value , S , typename next::type >::type
+      type ;
+};
+
+
+template< class ... Args >
+struct are_integral { enum { value = true }; };
+
+template< typename T , class ... Args >
+struct are_integral<T,Args...> {
+  enum { value =
+    // Accept std::is_integral OR std::is_enum as an integral value
+    // since a simple enum value is automically convertable to an
+    // integral value.
+    ( std::is_integral<T>::value || std::is_enum<T>::value )
+    &&
+    are_integral<Args...>::value };
+};
 
 //----------------------------------------------------------------------------
 /* C++11 conformal compile-time type traits utilities.
@@ -282,11 +355,33 @@ struct is_integral : public integral_constant< bool ,
     std::is_same< T , uint8_t  >::value ||
     std::is_same< T , uint16_t >::value ||
     std::is_same< T , uint32_t >::value ||
-    std::is_same< T , uint64_t >::value 
+    std::is_same< T , uint64_t >::value
   )>
 {};
-
 //----------------------------------------------------------------------------
+
+template<typename T>
+struct is_label : public false_type {};
+
+template<>
+struct is_label<const char*> : public true_type {};
+
+template<>
+struct is_label<char*> : public true_type {};
+
+
+template<int N>
+struct is_label<const char[N]> : public true_type {};
+
+template<int N>
+struct is_label<char[N]> : public true_type {};
+
+
+template<>
+struct is_label<const std::string> : public true_type {};
+
+template<>
+struct is_label<std::string> : public true_type {};
 
 // These 'constexpr'functions can be used as
 // both regular functions and meta-function.
@@ -345,7 +440,7 @@ unsigned power_of_two_if_valid( const unsigned N )
 {
   unsigned p = ~0u ;
   if ( N && ! ( N & ( N - 1 ) ) ) {
-#if defined( __CUDA_ARCH__ ) && defined( KOKKOS_HAVE_CUDA )
+#if defined( __CUDA_ARCH__ ) && defined( KOKKOS_ENABLE_CUDA )
     p = __ffs(N) - 1 ;
 #elif defined( __GNUC__ ) || defined( __GNUG__ )
     p = __builtin_ffs(N) - 1 ;

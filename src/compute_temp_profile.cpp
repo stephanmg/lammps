@@ -31,7 +31,8 @@ enum{TENSOR,BIN};
 /* ---------------------------------------------------------------------- */
 
 ComputeTempProfile::ComputeTempProfile(LAMMPS *lmp, int narg, char **arg) :
-  Compute(lmp, narg, arg)
+  Compute(lmp, narg, arg),
+  bin(NULL), vbin(NULL), binave(NULL), tbin(NULL), tbinall(NULL)
 {
   if (narg < 7) error->all(FLERR,"Illegal compute temp/profile command");
 
@@ -138,7 +139,6 @@ ComputeTempProfile::ComputeTempProfile(LAMMPS *lmp, int narg, char **arg) :
   }
 
   maxatom = 0;
-  bin = NULL;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -360,6 +360,15 @@ void ComputeTempProfile::remove_bias(int i, double *v)
 }
 
 /* ----------------------------------------------------------------------
+   remove velocity bias from atom I to leave thermal velocity
+------------------------------------------------------------------------- */
+
+void ComputeTempProfile::remove_bias_thr(int i, double *v, double *)
+{
+  remove_bias(i,v);
+}
+
+/* ----------------------------------------------------------------------
    remove velocity bias from all atoms to leave thermal velocity
 ------------------------------------------------------------------------- */
 
@@ -390,6 +399,16 @@ void ComputeTempProfile::restore_bias(int i, double *v)
   if (xflag) v[0] += binave[ibin][ivx];
   if (yflag) v[1] += binave[ibin][ivy];
   if (zflag) v[2] += binave[ibin][ivz];
+}
+
+/* ----------------------------------------------------------------------
+   add back in velocity bias to atom I removed by remove_bias_thr()
+   assume remove_bias_thr() was previously called
+------------------------------------------------------------------------- */
+
+void ComputeTempProfile::restore_bias_thr(int i, double *v, double *)
+{
+  restore_bias(i,v);
 }
 
 /* ----------------------------------------------------------------------
@@ -497,7 +516,7 @@ void ComputeTempProfile::bin_assign()
 {
   // reallocate bin array if necessary
 
-  if (atom->nlocal > maxatom) {
+  if (atom->nmax > maxatom) {
     maxatom = atom->nmax;
     memory->destroy(bin);
     memory->create(bin,maxatom,"temp/profile:bin");

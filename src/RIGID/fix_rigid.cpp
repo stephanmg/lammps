@@ -50,13 +50,22 @@ enum{ISO,ANISO,TRICLINIC};
 #define EPSILON 1.0e-7
 
 #define SINERTIA 0.4            // moment of inertia prefactor for sphere
-#define EINERTIA 0.4            // moment of inertia prefactor for ellipsoid
+#define EINERTIA 0.2            // moment of inertia prefactor for ellipsoid
 #define LINERTIA (1.0/12.0)     // moment of inertia prefactor for line segment
 
 /* ---------------------------------------------------------------------- */
 
 FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
-  Fix(lmp, narg, arg)
+  Fix(lmp, narg, arg), step_respa(NULL), 
+  infile(NULL), nrigid(NULL), mol2body(NULL), body2mol(NULL), 
+  body(NULL), displace(NULL), masstotal(NULL), xcm(NULL), 
+  vcm(NULL), fcm(NULL), inertia(NULL), ex_space(NULL), 
+  ey_space(NULL), ez_space(NULL), angmom(NULL), omega(NULL), 
+  torque(NULL), quat(NULL), imagebody(NULL), fflag(NULL), 
+  tflag(NULL), langextra(NULL), sum(NULL), all(NULL), 
+  remapflag(NULL), xcmimage(NULL), eflags(NULL), orient(NULL), 
+  dorient(NULL), id_dilate(NULL), random(NULL), avec_ellipsoid(NULL), 
+  avec_line(NULL), avec_tri(NULL)
 {
   int i,ibody;
 
@@ -67,6 +76,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
   virial_flag = 1;
   create_attribute = 1;
   dof_flag = 1;
+  enforce2d_flag = 1;
 
   MPI_Comm_rank(world,&me);
   MPI_Comm_size(world,&nprocs);
@@ -257,6 +267,8 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
 
   int seed;
   langflag = 0;
+  reinitflag = 1;
+
   tstat_flag = 0;
   pstat_flag = 0;
   allremap = 1;
@@ -281,7 +293,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+5 > narg) error->all(FLERR,"Illegal fix rigid command");
 
       int mlo,mhi;
-      force->bounds(arg[iarg+1],nbody,mlo,mhi);
+      force->bounds(FLERR,arg[iarg+1],nbody,mlo,mhi);
 
       double xflag,yflag,zflag;
       if (strcmp(arg[iarg+2],"off") == 0) xflag = 0.0;
@@ -312,7 +324,7 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+5 > narg) error->all(FLERR,"Illegal fix rigid command");
 
       int mlo,mhi;
-      force->bounds(arg[iarg+1],nbody,mlo,mhi);
+      force->bounds(FLERR,arg[iarg+1],nbody,mlo,mhi);
 
       double xflag,yflag,zflag;
       if (strcmp(arg[iarg+2],"off") == 0) xflag = 0.0;
@@ -491,6 +503,14 @@ FixRigid::FixRigid(LAMMPS *lmp, int narg, char **arg) :
       infile = new char[n];
       strcpy(infile,arg[iarg+1]);
       restart_file = 1;
+      reinitflag = 0;
+      iarg += 2;
+
+    } else if (strcmp(arg[iarg],"reinit") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix rigid/small command");
+      if (strcmp("yes",arg[iarg+1]) == 0) reinitflag = 1;
+      else if  (strcmp("no",arg[iarg+1]) == 0) reinitflag = 0;
+      else error->all(FLERR,"Illegal fix rigid command");
       iarg += 2;
 
     } else error->all(FLERR,"Illegal fix rigid command");
@@ -669,15 +689,15 @@ void FixRigid::init()
   if (strstr(update->integrate_style,"respa"))
     step_respa = ((Respa *) update->integrate)->step;
 
-  // setup rigid bodies, using current atom info
-  // only do initialization once, b/c properties may not be re-computable
-  //   especially if overlapping particles
-  // do not do dynamic init if read body properties from infile
-  //   this is b/c the infile defines the static and dynamic properties
-  //   and may not be computable if contain overlapping particles
+  // setup rigid bodies, using current atom info. if reinitflag is not set,
+  // do the initialization only once, b/c properties may not be re-computable
+  // especially if overlapping particles.
+  //   do not do dynamic init if read body properties from infile.
+  // this is b/c the infile defines the static and dynamic properties and may
+  // not be computable if contain overlapping particles.
   //   setup_bodies_static() reads infile itself
 
-  if (!setupflag) {
+  if (reinitflag || !setupflag) {
     setup_bodies_static();
     if (!infile) setup_bodies_dynamic();
     setupflag = 1;
@@ -897,7 +917,7 @@ void FixRigid::post_force(int vflag)
       langextra[i][0] = gamma1*vcm[i][0] + gamma2*(random->uniform()-0.5);
       langextra[i][1] = gamma1*vcm[i][1] + gamma2*(random->uniform()-0.5);
       langextra[i][2] = gamma1*vcm[i][2] + gamma2*(random->uniform()-0.5);
-
+      
       gamma1 = -1.0 / t_period / ftm2v;
       gamma2 = tsqrt * sqrt(24.0*boltz/t_period/dt/mvv2e) / ftm2v;
       langextra[i][3] = inertia[i][0]*gamma1*omega[i][0] +
@@ -910,6 +930,31 @@ void FixRigid::post_force(int vflag)
   }
 
   MPI_Bcast(&langextra[0][0],6*nbody,MPI_DOUBLE,0,world);
+}
+
+/* ----------------------------------------------------------------------
+   called from FixEnforce2d post_force() for 2d problems
+   zero all body values that should be zero for 2d model
+------------------------------------------------------------------------- */
+
+void FixRigid::enforce2d()
+{
+  for (int ibody = 0; ibody < nbody; ibody++) {
+    xcm[ibody][2] = 0.0;
+    vcm[ibody][2] = 0.0;
+    fcm[ibody][2] = 0.0;
+    torque[ibody][0] = 0.0;
+    torque[ibody][1] = 0.0;
+    angmom[ibody][0] = 0.0;
+    angmom[ibody][1] = 0.0;
+    omega[ibody][0] = 0.0;
+    omega[ibody][1] = 0.0;
+    if (langflag && langextra) {
+      langextra[ibody][2] = 0.0;
+      langextra[ibody][3] = 0.0;
+      langextra[ibody][4] = 0.0;
+    }
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1980,7 +2025,7 @@ void FixRigid::setup_bodies_static()
 
   MPI_Allreduce(sum[0],all[0],6*nbody,MPI_DOUBLE,MPI_SUM,world);
 
-  // error check that re-computed momemts of inertia match diagonalized ones
+  // error check that re-computed moments of inertia match diagonalized ones
   // do not do test for bodies with params read from infile
 
   double norm;

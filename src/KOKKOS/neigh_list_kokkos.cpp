@@ -22,22 +22,14 @@ enum{NSQ,BIN,MULTI};
 /* ---------------------------------------------------------------------- */
 
 template<class Device>
-void NeighListKokkos<Device>::clean_copy()
+NeighListKokkos<Device>::NeighListKokkos(class LAMMPS *lmp):NeighList(lmp)
 {
-  ilist = NULL;
-  numneigh = NULL;
-  firstneigh = NULL;
-  firstdouble = NULL;
-  dnum = 0;
-  iskip = NULL;
-  ijskip = NULL;
-
-  ipage = NULL;
-  dpage = NULL;
-  maxstencil = 0;
-  ghostflag = 0;
-  maxstencil_multi = 0;
-}
+  _stride = 1;
+  maxneighs = 16;
+  kokkos = 1;
+  maxatoms = 0;
+  execution_space = ExecutionSpaceFromDevice<Device>::space;
+};
 
 /* ---------------------------------------------------------------------- */
 
@@ -49,8 +41,9 @@ void NeighListKokkos<Device>::grow(int nmax)
   if (nmax <= maxatoms) return;
   maxatoms = nmax;
 
-  d_ilist =
-    typename ArrayTypes<Device>::t_int_1d("neighlist:ilist",maxatoms);
+  k_ilist =
+    DAT::tdual_int_1d("neighlist:ilist",maxatoms);
+  d_ilist = k_ilist.view<Device>();
   d_numneigh =
     typename ArrayTypes<Device>::t_int_1d("neighlist:numneigh",maxatoms);
   d_neighbors =
@@ -68,49 +61,6 @@ void NeighListKokkos<Device>::grow(int nmax)
 }
 
 /* ---------------------------------------------------------------------- */
-
-template<class Device>
-void NeighListKokkos<Device>::stencil_allocate(int smax, int style)
-{
-  int i;
-
-  if (style == BIN) {
-    if (smax > maxstencil) {
-      maxstencil = smax;
-      d_stencil =
-        memory->create_kokkos(d_stencil,h_stencil,stencil,maxstencil,
-                              "neighlist:stencil");
-      if (ghostflag) {
-        memory->create_kokkos(d_stencilxyz,h_stencilxyz,stencilxyz,maxstencil,
-                              3,"neighlist:stencilxyz");
-      }
-    }
-
-  } else {
-    int n = atom->ntypes;
-    if (maxstencil_multi == 0) {
-      nstencil_multi = new int[n+1];
-      stencil_multi = new int*[n+1];
-      distsq_multi = new double*[n+1];
-      for (i = 1; i <= n; i++) {
-        nstencil_multi[i] = 0;
-        stencil_multi[i] = NULL;
-        distsq_multi[i] = NULL;
-      }
-    }
-    if (smax > maxstencil_multi) {
-      maxstencil_multi = smax;
-      for (i = 1; i <= n; i++) {
-        memory->destroy(stencil_multi[i]);
-        memory->destroy(distsq_multi[i]);
-        memory->create(stencil_multi[i],maxstencil_multi,
-                       "neighlist:stencil_multi");
-        memory->create(distsq_multi[i],maxstencil_multi,
-                       "neighlist:distsq_multi");
-      }
-    }
-  }
-}
 
 namespace LAMMPS_NS {
 template class NeighListKokkos<LMPDeviceType>;

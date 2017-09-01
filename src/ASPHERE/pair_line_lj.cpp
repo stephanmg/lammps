@@ -69,11 +69,11 @@ PairLineLJ::~PairLineLJ()
 
 void PairLineLJ::compute(int eflag, int vflag)
 {
-  int i,j,ii,jj,inum,jnum,itype,jtype,tmp;
+  int i,j,ii,jj,inum,jnum,itype,jtype;
   int ni,nj,npi,npj,ifirst,jfirst;
   double xtmp,ytmp,ztmp,delx,dely,delz,evdwl,fpair;
   double rsq,r2inv,r6inv,term1,term2,sig,sig3,forcelj;
-  double xi[2],xj[2],fi[2],fj[2],dxi,dxj,dyi,dyj;
+  double xi[2],xj[2],fi[2],dxi,dxj,dyi,dyj;
   int *ilist,*jlist,*numneigh,**firstneigh;
 
   evdwl = 0.0;
@@ -355,7 +355,7 @@ void PairLineLJ::settings(int narg, char **arg)
   if (allocated) {
     int i,j;
     for (i = 1; i <= atom->ntypes; i++)
-      for (j = i+1; j <= atom->ntypes; j++)
+      for (j = i; j <= atom->ntypes; j++)
         if (setflag[i][j]) cut[i][j] = cut_global;
   }
 }
@@ -371,8 +371,8 @@ void PairLineLJ::coeff(int narg, char **arg)
   if (!allocated) allocate();
 
   int ilo,ihi,jlo,jhi;
-  force->bounds(arg[0],atom->ntypes,ilo,ihi);
-  force->bounds(arg[1],atom->ntypes,jlo,jhi);
+  force->bounds(FLERR,arg[0],atom->ntypes,ilo,ihi);
+  force->bounds(FLERR,arg[1],atom->ntypes,jlo,jhi);
 
   double size_itype = force->numeric(FLERR,arg[2]);
   double size_jtype = force->numeric(FLERR,arg[3]);
